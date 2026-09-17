@@ -7,10 +7,10 @@ This package provides an information theoretic generalization of the `TFIDFTrans
 
 This package is still under development,
 The `InformationWeightTransformer` was originally part of the
-`vectorizers <https://github.com/TutteInstitute/vectorizers>`
+`vectorizers <https://github.com/TutteInstitute/vectorizers>`_
 package, but has been factored out to ease development. You can find an
 overview and example of using the package in the
-`vectorizers documentation <https://vectorizers.readthedocs.io/en/latest/>`.
+`vectorizers documentation <https://vectorizers.readthedocs.io/en/latest/>`_.
 
 ----------
 Installing
@@ -24,6 +24,7 @@ To install the package from PyPI:
 
 Or to clone and install locally:
 .. code:: bash
+
     git clone https://github.com/ryandewolfe33/infoweight.git &&
     cd infoweight &&
     pip install .

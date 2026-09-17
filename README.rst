@@ -23,6 +23,7 @@ To install the package from PyPI:
     pip install infoweight
 
 Or to clone and install locally:
+
 .. code:: bash
 
     git clone https://github.com/ryandewolfe33/infoweight.git &&
@@ -45,7 +46,7 @@ help out. Everything from code to notebooks to examples and documentation
 are all *equally valuable* so please don't feel you can't contribute. 
 
 
-To contribute please `fork the project <https://github.com/ryandewolfe33/infoweight/issues#fork-destination-box>`_
+To contribute please `fork the project <https://github.com/ryandewolfe33/infoweight/fork>`_
 make your changes and submit a pull request. We will do our best to work
 through any issues with you and get your code merged into the main branch.
 

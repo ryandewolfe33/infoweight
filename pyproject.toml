@@ -28,9 +28,33 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "prek>=0.5.3",
     "pytest>=9.1.1",
 ]
 
 [project.urls]
 Homepage = "https://github.com/ryandewolfe33/infoweight"
 Repository = "https://github.com/ryandewolfe33/infoweight"
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify (helps write simpler code)
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B905", # Do not require strict in zip, not compatible with numba
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]

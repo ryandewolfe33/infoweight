@@ -1,6 +1,7 @@
-import pytest
 import numpy as np
+import pytest
 import scipy.sparse
+
 from infoweight import InformationWeightTransformer
 
 test_matrix = scipy.sparse.csr_matrix([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
@@ -8,6 +9,7 @@ test_matrix_zero_row = scipy.sparse.csr_matrix([[1, 2, 3], [4, 5, 6], [0, 0, 0]]
 test_matrix_zero_row.eliminate_zeros()
 test_matrix_zero_column = scipy.sparse.csr_matrix([[1, 2, 0], [4, 5, 0], [7, 8, 0]])
 test_matrix_zero_column.eliminate_zeros()
+
 
 @pytest.mark.parametrize("prior_strength", [0.1, 1.0])
 @pytest.mark.parametrize("approx_prior", [True, False])

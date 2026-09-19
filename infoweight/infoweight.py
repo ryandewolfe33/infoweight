@@ -1,7 +1,7 @@
 import numba
 import numpy as np
-from sklearn.base import BaseEstimator, TransformerMixin
 import scipy.sparse
+from sklearn.base import BaseEstimator, TransformerMixin
 
 MOCK_TARGET = np.ones(1, dtype=np.int64)
 MOCK_BOOL = np.ones(1, dtype=np.bool)
@@ -325,7 +325,7 @@ class InformationWeightTransformer(BaseEstimator, TransformerMixin):
         )
 
         if y is not None:
-            unsupervised_power = (1.0 - self.supervision_weight) * self.weight_power
+            # unsupervised_power = (1.0 - self.supervision_weight) * self.weight_power
             supervised_power = self.supervision_weight * self.weight_power
 
             target_classes = np.unique(y)

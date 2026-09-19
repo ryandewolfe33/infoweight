@@ -43,7 +43,7 @@ Contributing
 Contributions are more than welcome! There are lots of opportunities
 for potential projects, so please get in touch if you would like to
 help out. Everything from code to notebooks to examples and documentation
-are all *equally valuable* so please don't feel you can't contribute. 
+are all *equally valuable* so please don't feel you can't contribute.
 
 
 To contribute please `fork the project <https://github.com/ryandewolfe33/infoweight/fork>`_

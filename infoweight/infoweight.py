@@ -3,110 +3,72 @@ import numpy as np
 import scipy.sparse
 from sklearn.base import BaseEstimator, TransformerMixin
 
-MOCK_TARGET = np.ones(1, dtype=np.int64)
-MOCK_BOOL = np.ones(1, dtype=np.bool)
 
-
-@numba.njit(nogil=True)
-def column_kl_divergence_exact_prior(
+@numba.njit(nogil=True, cache=True)
+def column_kl_divergence(
     count_indices,
     count_data,
-    baseline_probabilities,
-    prior_strength=0.1,
-    target=MOCK_TARGET,
+    prior_probs,
+    prior_strength,
+    target=None,
 ):
-    observed_norm = count_data.sum() + prior_strength
-    observed_zero_constant = (prior_strength / observed_norm) * np.log(
-        prior_strength / observed_norm
-    )
-    result = 0.0
-    count_indices_set = set(count_indices)
-    for i in range(baseline_probabilities.shape[0]):
-        if i in count_indices_set:
-            idx = np.searchsorted(count_indices, i)
-            observed_probability = (
-                count_data[idx] + prior_strength * baseline_probabilities[i]
-            ) / observed_norm
-            if observed_probability > 0.0:
-                result += observed_probability * np.log(
-                    observed_probability / baseline_probabilities[i]
-                )
-        else:
-            result += baseline_probabilities[i] * observed_zero_constant
+    """Function to compute the KL-divergence between a prior and a posterior distribution,
+    the posterior computed as (1-prior_strength) * observed + prior_strength * prior.
 
+    Parameters
+    ----------
+    count_indices
+        The indices of non-zero observed counts.
+
+    count_data
+        The number of observed counts.
+
+    prior_probs
+        The prior probability distribution.
+
+    prior_strength
+        The strength of the prior probability distribution in the bayesian update.
+
+    target
+        If available, the target class of each index. Indices with class -1 are
+        treated as noise / unlabelled and will be ignored.
+    """
+    # Zero kl_divergence when non count data is observed
+    total_count = np.sum(count_data)
+    if total_count == 0:
+        return 0
+    prior_info = np.log2(prior_strength)
+    if np.isinf(prior_info):  # Happens if prior_strength == -inf
+        prior_info = 0
+    # Initialize result as if every index were 0 count
+    result = prior_strength * prior_info
+    for index, count in zip(count_indices, count_data):
+        if target is not None:  # switch index to target class if necessary
+            index = target[index]
+            if index == -1:  # Skip unlabelled indices
+                continue
+        # This index is non-zero, so subtract it's zero count contribution
+        zero_count_contribution = prior_strength * prior_probs[index] * prior_info
+        result -= zero_count_contribution
+        # Add the contribution from the actual posterior
+        posterior_prob = (1 - prior_strength) * (
+            count / total_count
+        ) + prior_strength * prior_probs[index]
+        posterior_contribution = posterior_prob * np.log2(
+            posterior_prob / prior_probs[index]
+        )
+        result += posterior_contribution
     return result
 
 
-@numba.njit(nogil=True)
-def column_kl_divergence_approx_prior(
-    count_indices,
-    count_data,
-    baseline_probabilities,
-    prior_strength=0.1,
-    target=MOCK_TARGET,
-):
-    observed_norm = count_data.sum() + prior_strength
-    observed_zero_constant = (prior_strength / observed_norm) * np.log(
-        prior_strength / observed_norm
-    )
-    result = 0.0
-    zero_count_component_estimate = (
-        np.mean(baseline_probabilities)
-        * observed_zero_constant
-        * (baseline_probabilities.shape[0] - count_indices.shape[0])
-    )
-    result += zero_count_component_estimate
-    for i in range(count_indices.shape[0]):
-        idx = count_indices[i]
-        observed_probability = (
-            count_data[i] + prior_strength * baseline_probabilities[idx]
-        ) / observed_norm
-        if observed_probability > 0.0 and baseline_probabilities[idx] > 0:
-            result += observed_probability * np.log(
-                observed_probability / baseline_probabilities[idx]
-            )
-
-    return result
-
-
-@numba.njit(nogil=True)
-def supervised_column_kl(
-    count_indices,
-    count_data,
-    baseline_probabilities,
-    prior_strength=0.1,
-    target=MOCK_TARGET,
-):
-    observed = np.zeros_like(baseline_probabilities)
-    for i in range(count_indices.shape[0]):
-        idx = count_indices[i]
-        label = target[idx]
-        if label >= 0:
-            observed[label] += count_data[i]
-
-    observed += prior_strength * baseline_probabilities
-    observed /= observed.sum()
-
-    # Zeros in baseline_probabilities may cause nans in the log
-    # But this can only happen when observed is also 0, so due
-    # to the multiplication it does not contribute to the sum
-    non_zero = observed > 0
-    result = np.sum(
-        observed[non_zero]
-        * np.log(observed[non_zero] / baseline_probabilities[non_zero])
-    )
-    return result
-
-
-@numba.njit(nogil=True, parallel=True)
+@numba.njit(nogil=True, cache=True, parallel=True)
 def column_weights(
     indptr,
     indices,
     data,
     baseline_probabilities,
-    column_kl_divergence_func,
-    prior_strength=0.1,
-    target=MOCK_TARGET,
+    prior_strength,
+    target=None,
     column_groups=None,
 ):
     n_cols = indptr.shape[0] - 1
@@ -115,7 +77,7 @@ def column_weights(
         group = 0
         if column_groups is not None:
             group = column_groups[i]
-        weights[i] = column_kl_divergence_func(
+        weights[i] = column_kl_divergence(
             indices[indptr[i] : indptr[i + 1]],
             data[indptr[i] : indptr[i + 1]],
             baseline_probabilities[group, :],
@@ -166,8 +128,7 @@ def compute_baseline_probabilities(
 
 def information_weight(
     data,
-    prior_strength=0.1,
-    approximate_prior=False,
+    prior_strength=1e-4,
     target=None,
     column_groups=None,
 ):
@@ -175,12 +136,10 @@ def information_weight(
     is estimated as the amount of information gained by moving from a baseline
     model to a model derived from the observed counts. In practice this can be
     computed as the KL-divergence between distributions. For the baseline model
-    we assume data will be distributed according to the row sums -- i.e.
-    proportional to the frequency of the row. For the observed counts we use
-    a background prior of pseudo counts equal to ``prior_strength`` times the
-    baseline prior distribution. The Bayesian prior can either be computed
-    exactly (the default) at some computational expense, or estimated for a much
-    fast computation, often suitable for large or very sparse datasets.
+    we assume data distributed according to the row sums -- i.e. proportional
+    to the frequency of the row. For the observed model we do a bayesian update
+    on the prior distribution with weight prior_strength with the observed counts
+    distribution with weight (1-prior_strength).
 
     Parameters
     ----------
@@ -192,11 +151,6 @@ def information_weight(
     prior_strength: float (optional, default=0.1)
         How strongly to weight the prior when doing a Bayesian update to
         derive a model based on observed counts of a column.
-
-    approximate_prior: bool (optional, default=False)
-        Whether to approximate weights based on the Bayesian prior or perform
-        exact computations. Approximations are much faster especially for very
-        large or very sparse datasets.
 
     target: ndarray or None (optional, default=None)
         If supervised target labels are available, these can be used to define distributions
@@ -214,13 +168,6 @@ def information_weight(
         The learned weights to be applied to columns based on the amount
         of information provided by the column.
     """
-    if target is not None:
-        column_kl_divergence_func = supervised_column_kl
-    elif approximate_prior:
-        column_kl_divergence_func = column_kl_divergence_approx_prior
-    else:
-        column_kl_divergence_func = column_kl_divergence_exact_prior
-
     csr_data = data.tocsr()
     baseline_probabilities = compute_baseline_probabilities(
         csr_data.indptr,
@@ -237,7 +184,6 @@ def information_weight(
         csc_data.indices,
         csc_data.data,
         baseline_probabilities,
-        column_kl_divergence_func,
         prior_strength=prior_strength,
         target=target,
         column_groups=column_groups,
@@ -265,11 +211,6 @@ class InformationWeightTransformer(BaseEstimator, TransformerMixin):
         How strongly to weight the prior when doing a Bayesian update to
         derive a model based on observed counts of a column.
 
-    approximate_prior: bool (optional, default=False)
-        Whether to approximate weights based on the Bayesian prior or perform
-        exact computations. Approximations are much faster especially for very
-        large or very sparse datasets.
-
     Attributes
     ----------
 
@@ -281,12 +222,10 @@ class InformationWeightTransformer(BaseEstimator, TransformerMixin):
     def __init__(
         self,
         prior_strength=1e-4,
-        approx_prior=True,
-        weight_power=2.0,
+        weight_power=1.0,
         supervision_weight=0.95,
     ):
         self.prior_strength = prior_strength
-        self.approx_prior = approx_prior
         self.weight_power = weight_power
         self.supervision_weight = supervision_weight
 
@@ -311,14 +250,9 @@ class InformationWeightTransformer(BaseEstimator, TransformerMixin):
         self.information_weights_ = information_weight(
             X,
             self.prior_strength,
-            self.approx_prior,
             column_groups=column_groups,
         )
 
-        mean_weight = np.mean(self.information_weights_)
-        if mean_weight > 0:
-            self.information_weights_ /= mean_weight
-            # This should never happen
         self.information_weights_ = np.maximum(self.information_weights_, 0.0)
         self.information_weights_ = np.power(
             self.information_weights_, self.weight_power
@@ -338,14 +272,10 @@ class InformationWeightTransformer(BaseEstimator, TransformerMixin):
             self.supervised_weights_ = information_weight(
                 X,
                 self.prior_strength,
-                self.approx_prior,
                 target=target,
                 column_groups=column_groups,
             )
-            mean_supervised_weight = np.mean(self.information_weights_)
-            if mean_supervised_weight > 0:
-                self.supervised_weights_ /= mean_supervised_weight
-            # This should never happen
+
             self.supervised_weights_ = np.maximum(self.supervised_weights_, 0.0)
             self.supervised_weights_ = np.power(
                 self.supervised_weights_, supervised_power

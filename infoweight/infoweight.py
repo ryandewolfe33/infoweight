@@ -4,6 +4,7 @@ import numba
 import numpy as np
 import scipy.sparse
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.utils.validation import validate_data
 
 
 @numba.njit(nogil=True, cache=True)
@@ -126,7 +127,7 @@ def compute_baseline_probabilities(
     n_targets = indptr.shape[0] - 1
     if target is not None:
         n_targets = target.max() + 1
-    counts = np.zeros((n_groups, n_targets), dtype=np.int64)
+    counts = np.zeros((n_groups, n_targets), dtype=data.dtype)
     for row in range(indptr.shape[0] - 1):
         this_target = row
         if target is not None:
@@ -251,7 +252,7 @@ def information_weight(
     return weights
 
 
-class InformationWeightTransformer(BaseEstimator, TransformerMixin):
+class InformationWeightTransformer(TransformerMixin, BaseEstimator):
     """A data transformer that re-weights columns of count data. Column weights
     are computed as information based weights for columns. The information weight
     is estimated as the amount of information gained by moving from a baseline
@@ -290,6 +291,29 @@ class InformationWeightTransformer(BaseEstimator, TransformerMixin):
         self.supervision_weight = supervision_weight
         self.normalize = normalize
 
+    def __sklearn_tags__(self):
+        tags = super().__sklearn_tags__()
+        tags.estimator_type = "transformer"
+        tags.input_tags.sparse = True
+        tags.input_tags.positive_only = True
+        tags.target_tags.one_d_labels = True
+        return tags
+
+    def _validate_data(self, X, y=None, reset=False):
+        x_validation = {"accept_sparse": True, "ensure_non_negative": True}
+        if y is None:
+            X = validate_data(self, X, reset=reset, **x_validation)
+        else:
+            y_validation = {"ensure_2d": False, "dtype": None}
+            X, y = validate_data(
+                self,
+                X,
+                y,
+                reset=reset,
+                validate_separately=(x_validation, y_validation),
+            )
+        return X, y
+
     def _format_y(self, y):
         # Format y as array of ints if it is not
         if np.issubdtype(y.dtype, np.number) and not np.issubdtype(y.dtype, np.integer):
@@ -315,7 +339,7 @@ class InformationWeightTransformer(BaseEstimator, TransformerMixin):
             y = np.array([target_dict[label] for label in y], dtype=np.int64)
         return y
 
-    def fit(self, X, y=None, column_groups=None, **fit_kwds):
+    def fit(self, X, y=None, column_groups=None):
         """Learn the appropriate column weighting as information weights
         from the observed count data ``X``.
 
@@ -330,8 +354,9 @@ class InformationWeightTransformer(BaseEstimator, TransformerMixin):
         self:
             The trained model.
         """
+        X, y = self._validate_data(X, y, reset=True)
         if not scipy.sparse.isspmatrix(X):
-            X = scipy.sparse.csc_matrix(X)
+            X = scipy.sparse.csr_matrix(X)
 
         self.information_weights_ = information_weight(
             X,
@@ -381,5 +406,11 @@ class InformationWeightTransformer(BaseEstimator, TransformerMixin):
         result: ndarray of scipy sparse matrix of shape (n_samples, n_features)
             The reweighted data.
         """
-        result = X @ scipy.sparse.diags(self.information_weights_)
+        X, _ = self._validate_data(X, reset=False)
+        if isinstance(X, np.ndarray):
+            result = X * self.information_weights_
+        elif scipy.sparse.issparse(X):
+            result = X.multiply(self.information_weights_.reshape(1, -1))
+        else:
+            raise ValueError("X should be a numpy array or scipy sparse array.")
         return result

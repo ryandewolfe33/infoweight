@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "infoweight"
-version = "0.0.1"
+version = "0.0.2"
 readme = "README.rst"
 description = "An information theoretic generalization of TF-IDF."
 maintainers = [{name = "Ryan DeWolfe", email = "ryan.dewolfe@uwaterloo.ca"}]

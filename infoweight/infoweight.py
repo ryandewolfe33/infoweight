@@ -1,3 +1,5 @@
+from warnings import warn
+
 import numba
 import numpy as np
 import scipy.sparse
@@ -28,29 +30,31 @@ def column_kl_divergence(
 
     prior_strength
         The strength of the prior probability distribution in the bayesian update.
-
-    target
-        If available, the target class of each index. Indices with class -1 are
-        treated as noise / unlabelled and will be ignored.
     """
     # Zero kl_divergence when non count data is observed
     total_count = np.sum(count_data)
     if total_count == 0:
         return 0
+
+    # Special case if the posterior is equal to the prior
+    # Could compute as usual but precision causes issues
+    posterior_equal_prior = True
+    for index, count in zip(count_indices, count_data):
+        if count / total_count != prior_probs[index]:
+            posterior_equal_prior = False
+            break
+    if posterior_equal_prior:
+        return 0
+
     prior_info = np.log2(prior_strength)
     if np.isinf(prior_info):  # Happens if prior_strength == -inf
         prior_info = 0
+
     # Initialize result as if every index were 0 count
     result = prior_strength * prior_info
     for index, count in zip(count_indices, count_data):
-        if target is not None:  # switch index to target class if necessary
-            index = target[index]
-            if index == -1:  # Skip unlabelled indices
-                continue
-        # This index is non-zero, so subtract it's zero count contribution
         zero_count_contribution = prior_strength * prior_probs[index] * prior_info
         result -= zero_count_contribution
-        # Add the contribution from the actual posterior
         posterior_prob = (1 - prior_strength) * (
             count / total_count
         ) + prior_strength * prior_probs[index]
@@ -58,6 +62,7 @@ def column_kl_divergence(
             posterior_prob / prior_probs[index]
         )
         result += posterior_contribution
+
     return result
 
 
@@ -77,9 +82,21 @@ def column_weights(
         group = 0
         if column_groups is not None:
             group = column_groups[i]
+        count_indices = indices[indptr[i] : indptr[i + 1]]
+        count_data = data[indptr[i] : indptr[i + 1]]
+
+        # Make observed target distribution if necessary
+        if target is not None:
+            target_counts = np.zeros(baseline_probabilities.shape[1], dtype=data.dtype)
+            for index, count in zip(count_indices, count_data):
+                if target[index] >= 0:
+                    target_counts[target[index]] += count
+            count_indices = np.nonzero(target_counts)[0].astype(count_indices.dtype)
+            count_data = target_counts[count_indices]
+
         weights[i] = column_kl_divergence(
-            indices[indptr[i] : indptr[i + 1]],
-            data[indptr[i] : indptr[i + 1]],
+            count_indices,
+            count_data,
             baseline_probabilities[group, :],
             prior_strength=prior_strength,
             target=target,
@@ -229,6 +246,31 @@ class InformationWeightTransformer(BaseEstimator, TransformerMixin):
         self.weight_power = weight_power
         self.supervision_weight = supervision_weight
 
+    def _format_y(self, y):
+        # Format y as array of ints if it is not
+        if np.issubdtype(y.dtype, np.number) and not np.issubdtype(y.dtype, np.integer):
+            cast_y = y.astype(int)
+            if np.all(y == cast_y):
+                warn(
+                    f"Input y was cast from {y.dtype} to {cast_y.dtype} and will be treated"
+                    "as array of ints. Consider passing y as an array of ints.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                y = cast_y
+            else:
+                warn(
+                    f"Input y could not be cast from {y.dtype} to {cast_y.dtype} and will be"
+                    "treated as array of objects (identical values have the same class).",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        if not np.issubdtype(y.dtype, np.integer):
+            target_classes = np.unique(y)
+            target_dict = {target_classes[i]: i for i in range(target_classes.shape[0])}
+            y = np.array([target_dict[label] for label in y], dtype=np.int64)
+        return y
+
     def fit(self, X, y=None, column_groups=None, **fit_kwds):
         """Learn the appropriate column weighting as information weights
         from the observed count data ``X``.
@@ -253,37 +295,34 @@ class InformationWeightTransformer(BaseEstimator, TransformerMixin):
             column_groups=column_groups,
         )
 
-        self.information_weights_ = np.maximum(self.information_weights_, 0.0)
-        self.information_weights_ = np.power(
-            self.information_weights_, self.weight_power
-        )
+        if y is not None and self.supervision_weight > 0:
+            y_ = self._format_y(y)
 
-        if y is not None:
-            # unsupervised_power = (1.0 - self.supervision_weight) * self.weight_power
-            supervised_power = self.supervision_weight * self.weight_power
+            print("Supervised")
 
-            target_classes = np.unique(y)
-            target_dict = dict(
-                np.vstack((target_classes, np.arange(target_classes.shape[0]))).T
-            )
-            target = np.array(
-                [np.int64(target_dict[label]) for label in y], dtype=np.int64
-            )
-            self.supervised_weights_ = information_weight(
+            supervised_weights = information_weight(
                 X,
                 self.prior_strength,
-                target=target,
+                target=y_,
                 column_groups=column_groups,
             )
 
-            self.supervised_weights_ = np.maximum(self.supervised_weights_, 0.0)
-            self.supervised_weights_ = np.power(
-                self.supervised_weights_, supervised_power
-            )
+            print(supervised_weights)
+            print(self.information_weights_)
 
-            self.information_weights_ = (
-                self.information_weights_ * self.supervised_weights_
+            np.power(
+                supervised_weights, self.supervision_weight, out=supervised_weights
             )
+            np.power(
+                self.information_weights_,
+                1 - self.supervision_weight,
+                out=self.information_weights_,
+            )
+            self.information_weights_ = supervised_weights * self.information_weights_
+
+        self.information_weights_ = np.power(
+            self.information_weights_, self.weight_power
+        )
 
         return self
 

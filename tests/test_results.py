@@ -9,7 +9,7 @@ test_matrix = scipy.sparse.csr_matrix(
 
 
 def test_iw_transformer_default_result():
-    IWT = InformationWeightTransformer()
+    IWT = InformationWeightTransformer(normalize=False)
     IWT.fit(test_matrix)
     answer = np.array(
         [
@@ -24,7 +24,7 @@ def test_iw_transformer_default_result():
 
 
 def test_iw_transformer_zero_prior_result():
-    IWT = InformationWeightTransformer(prior_strength=0)
+    IWT = InformationWeightTransformer(prior_strength=0, normalize=False)
     IWT.fit(test_matrix)
     answer = np.array(
         [
@@ -39,7 +39,7 @@ def test_iw_transformer_zero_prior_result():
 
 
 def test_iw_transformer_supervised_result():
-    IWT = InformationWeightTransformer()
+    IWT = InformationWeightTransformer(normalize=False)
     IWT.fit(test_matrix, np.array([0, 0, 1, 1]))
     answer = np.array(
         [
@@ -54,7 +54,7 @@ def test_iw_transformer_supervised_result():
 
 
 def test_iw_transformer_supervised_one_supervised_weight_result():
-    IWT = InformationWeightTransformer(supervision_weight=1)
+    IWT = InformationWeightTransformer(supervision_weight=1, normalize=False)
     IWT.fit(test_matrix, np.array([0, 0, 1, 1]))
     answer = np.array(
         [
@@ -69,7 +69,7 @@ def test_iw_transformer_supervised_one_supervised_weight_result():
 
 
 def test_iw_transformer_semisupervised_column_groups_result():
-    IWT = InformationWeightTransformer()
+    IWT = InformationWeightTransformer(normalize=False)
     IWT.fit(
         test_matrix, np.array([0, 0, 1, -1]), column_groups=np.array([0, 0, 1, 1, 1])
     )
@@ -86,7 +86,7 @@ def test_iw_transformer_semisupervised_column_groups_result():
 
 
 def test_iw_transformer_semisupervised_result():
-    IWT = InformationWeightTransformer()
+    IWT = InformationWeightTransformer(normalize=False)
     IWT.fit(test_matrix, np.array([0, 0, 1, -1]))
     answer = np.array(
         [
@@ -101,7 +101,7 @@ def test_iw_transformer_semisupervised_result():
 
 
 def test_iw_transformer_column_groups_result():
-    IWT = InformationWeightTransformer()
+    IWT = InformationWeightTransformer(normalize=False)
     IWT.fit(test_matrix, column_groups=np.array([0, 0, 1, 1, 1]))
     answer = np.array(
         [
@@ -116,7 +116,7 @@ def test_iw_transformer_column_groups_result():
 
 
 def test_iw_transformer_supervised_column_groups_result():
-    IWT = InformationWeightTransformer()
+    IWT = InformationWeightTransformer(normalize=False)
     IWT.fit(
         test_matrix, np.array([0, 0, 1, 1]), column_groups=np.array([0, 0, 1, 1, 1])
     )

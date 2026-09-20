@@ -143,11 +143,37 @@ def compute_baseline_probabilities(
     return probabilities
 
 
+@numba.njit(nogil=True, parallel=True)
+def compute_baseline_entropies(baseline_probabilities):
+    group_entropies = np.empty(baseline_probabilities.shape[0], dtype="float64")
+    for i in numba.prange(baseline_probabilities.shape[0]):
+        marginal = baseline_probabilities[i, :]
+        marginal = marginal[marginal > 0]
+        group_entropies[i] = -np.sum(marginal * np.log2(marginal))
+    return group_entropies
+
+
+@numba.njit(nogil=True)
+def normalize_by_baseline_entropy(
+    weights,
+    baseline_probabilities,
+    column_groups=None,
+):
+    baseline_entropies = compute_baseline_entropies(baseline_probabilities)
+    if column_groups is None:
+        weights /= baseline_entropies[0]
+    else:
+        for i in numba.prange(weights.shape[0]):
+            weights[i] /= baseline_entropies[column_groups[i]]
+    return weights
+
+
 def information_weight(
     data,
     prior_strength=1e-4,
     target=None,
     column_groups=None,
+    normalize=True,
 ):
     """Compute information based weights for columns. The information weight
     is estimated as the amount of information gained by moving from a baseline
@@ -185,7 +211,6 @@ def information_weight(
         The learned weights to be applied to columns based on the amount
         of information provided by the column.
     """
-    print(prior_strength)
     if prior_strength < 0 or prior_strength >= 1:
         raise ValueError("prior_strength must be at least 0 and less than 1.")
     if target is not None and len(target) != data.shape[0]:
@@ -215,6 +240,13 @@ def information_weight(
         target=target,
         column_groups=column_groups,
     )
+
+    if normalize:
+        normalize_by_baseline_entropy(
+            weights,
+            baseline_probabilities,
+            column_groups=column_groups,
+        )
 
     return weights
 
@@ -251,10 +283,12 @@ class InformationWeightTransformer(BaseEstimator, TransformerMixin):
         prior_strength=1e-4,
         weight_power=1.0,
         supervision_weight=0.95,
+        normalize=True,
     ):
         self.prior_strength = prior_strength
         self.weight_power = weight_power
         self.supervision_weight = supervision_weight
+        self.normalize = normalize
 
     def _format_y(self, y):
         # Format y as array of ints if it is not
@@ -303,22 +337,19 @@ class InformationWeightTransformer(BaseEstimator, TransformerMixin):
             X,
             self.prior_strength,
             column_groups=column_groups,
+            normalize=self.normalize,
         )
 
         if y is not None and self.supervision_weight > 0:
             y_ = self._format_y(y)
-
-            print("Supervised")
 
             supervised_weights = information_weight(
                 X,
                 self.prior_strength,
                 target=y_,
                 column_groups=column_groups,
+                normalize=self.normalize,
             )
-
-            print(supervised_weights)
-            print(self.information_weights_)
 
             np.power(
                 supervised_weights, self.supervision_weight, out=supervised_weights

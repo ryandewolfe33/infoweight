@@ -185,6 +185,16 @@ def information_weight(
         The learned weights to be applied to columns based on the amount
         of information provided by the column.
     """
+    print(prior_strength)
+    if prior_strength < 0 or prior_strength >= 1:
+        raise ValueError("prior_strength must be at least 0 and less than 1.")
+    if target is not None and len(target) != data.shape[0]:
+        raise ValueError("The length of target must be equal to the number of rows.")
+    if column_groups is not None and len(column_groups) != data.shape[1]:
+        raise ValueError(
+            "The number of columns must match the length of column groups."
+        )
+
     csr_data = data.tocsr()
     baseline_probabilities = compute_baseline_probabilities(
         csr_data.indptr,

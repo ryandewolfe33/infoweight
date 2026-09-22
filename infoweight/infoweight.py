@@ -267,9 +267,26 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
 
     Parameters
     ----------
-    prior_strength: float (optional, default=0.1)
+    prior_strength: float (optional, default=0.0001)
         How strongly to weight the prior when doing a Bayesian update to
-        derive a model based on observed counts of a column.
+        derive a model based on observed counts of a column. Must be in
+        [0,1).
+
+    weight_power: float (optional, default=1.0)
+        Replace each column weight with information_weight**weight_power.
+        Weight powers greater than 1 exaggerates the information weight
+        transform while values less than 1 dampen. Must be positive.
+
+    supervision_weight: float (optional, default=0.95)
+        Parameter for combining supervised and unsupervised weights when
+        targets are passed. Final weight is supervised_weight**supervision_weight
+        * unsupervised_weight**(1-supervision weight). Must be in (0, 1].
+
+    normalize: bool (optional, default=True)
+        Flag to normalize the weights by the entropy of the marginal
+        distribution. Essential for combining weights from different
+        marginal distribution like is done in supervised mode (when
+        supervision weight < 1).
 
     Attributes
     ----------
@@ -345,14 +362,24 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
 
         Parameters
         ----------
-        X: ndarray of scipy sparse matrix of shape (n_samples, n_features)
-            The count data to be trained on. Note that, as count data all
-            entries should be positive or zero.
+        X: ndarray | scipy.sparse.array | scipy.sparse.matrix
+            Input matrix of shape (n_samples, n_features). The count data
+            to be trained on. All entries must be positive or zero.
 
-        Returns
-        -------
-        self:
-            The trained model.
+        y: ndarray | None (optional, default=None)
+            Array with shape (n_samples, ) of labels for the rows of X that
+            are used in supervised mode. If the input array is integers, each
+            integer is interpreted as a label and -1 entries are interpreted
+            as unlabelled (i.e. semi-supervised mode). Otherwise, each unique
+            value is interpreted as a label.
+
+        column_groups: ndarray | None (optional, default=None)
+            Array with shape (n_features, ) of labels for known column groups,
+            for example if the count data represents several one-hot-encoded
+            variables that have been horizontally joined. The information of
+            each column is computed with reference to the within column group
+            marginal distribution.
+
         """
         X, y = self._validate_data(X, y, reset=True)
         if not scipy.sparse.isspmatrix(X):
@@ -393,19 +420,7 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         return self
 
     def transform(self, X):
-        """Reweight data ``X`` based on learned information weights of columns.
-
-        Parameters
-        ----------
-        X: ndarray of scipy sparse matrix of shape (n_samples, n_features)
-            The count data to be transformed. Note that, as count data all
-            entries should be positive or zero.
-
-        Returns
-        -------
-        result: ndarray of scipy sparse matrix of shape (n_samples, n_features)
-            The reweighted data.
-        """
+        """Reweight data ``X`` based on learned information weights of columns."""
         X, _ = self._validate_data(X, reset=False)
         if isinstance(X, np.ndarray):
             result = X * self.information_weights_

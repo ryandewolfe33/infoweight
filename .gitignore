@@ -39,8 +39,7 @@ var/
 coverage.xml
 
 # Sphinx documentation
-doc/_build/
-doc/generated/
+docs/_build/
 
 # Jupyter artifacts
 .ipynb_checkpoints

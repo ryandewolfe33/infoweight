@@ -44,5 +44,6 @@ docs/_build/
 # Jupyter artifacts
 .ipynb_checkpoints
 
-# Do not ignore the .github folder or its contents
+# Exceptions
 !.github/
+!.readthedocs.yaml

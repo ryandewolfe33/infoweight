@@ -12,6 +12,12 @@ The :class:`InformationWeightTransformer` was originally part of the
 package, but has been factored out to ease development.
 
 .. toctree::
+   :maxdepth: 2
+   :caption: Examples
+
+   papers
+
+.. toctree::
    :maxdepth: 1
    :caption: API Reference:
 

@@ -169,12 +169,29 @@ def normalize_by_baseline_entropy(
     return weights
 
 
+@numba.njit
+def expected_information_weight(
+    weights,
+    column_groups,
+    column_marginal,
+):
+    n_groups = np.max(column_groups) + 1
+    eiw = np.zeros(n_groups)
+    group_total_probs = np.zeros(n_groups)
+    for weight, group, prob in zip(weights, column_groups, column_marginal):
+        eiw[group] += prob * weight
+        group_total_probs[group] += prob
+    eiw /= group_total_probs
+    return eiw
+
+
 def information_weight(
     data,
     prior_strength=1e-4,
     target=None,
     column_groups=None,
     normalize=True,
+    reweight_groups=True,
 ):
     """Compute information based weights for columns. The information weight
     is estimated as the amount of information gained by moving from a baseline
@@ -205,6 +222,14 @@ def information_weight(
         If columns have a natural grouping, i.e. cols 10-15 are a one-hot-encoding of a single
         categorical variable, we should compare the column distribution to the within group
         marginal. If passed None then all columns have the same group.
+
+    normalize: bool (optional, default=True)
+        Normalize the information weight by dividing by the entropy of the marginal distribution.
+        This normalizes the 'scale' so weights from different distributions can be combined.
+
+    reweight_groups: bool (optional, default=True)
+        Reweight the column_groups by multiplying each information weight by the expected
+        weight of the column group. This will up-weight informative column groups.
 
     Returns
     -------
@@ -248,6 +273,20 @@ def information_weight(
             baseline_probabilities,
             column_groups=column_groups,
         )
+
+    if reweight_groups and column_groups is not None:
+        column_marginal = np.asarray(csc_data.sum(axis=0)).reshape(-1).astype("float64")
+        column_marginal /= np.sum(column_marginal)
+        print(weights)
+        print(column_groups)
+        print(column_marginal)
+        print(column_marginal.shape)
+        eiw = expected_information_weight(
+            weights,
+            column_groups,
+            column_marginal,
+        )
+        weights *= eiw[column_groups]
 
     return weights
 
@@ -302,11 +341,13 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         weight_power=1.0,
         supervision_weight=0.95,
         normalize=True,
+        reweight_groups=True,
     ):
         self.prior_strength = prior_strength
         self.weight_power = weight_power
         self.supervision_weight = supervision_weight
         self.normalize = normalize
+        self.reweight_groups = reweight_groups
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()
@@ -390,6 +431,7 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
             self.prior_strength,
             column_groups=column_groups,
             normalize=self.normalize,
+            reweight_groups=self.reweight_groups,
         )
 
         if y is not None and self.supervision_weight > 0:
@@ -401,6 +443,7 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
                 target=y_,
                 column_groups=column_groups,
                 normalize=self.normalize,
+                reweight_groups=self.reweight_groups,
             )
 
             np.power(

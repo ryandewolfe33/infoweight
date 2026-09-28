@@ -33,9 +33,14 @@ def test_iw_transformer(prior_strength, normalize):
 @pytest.mark.parametrize("target", [None, np.array([0, 1, 1])])
 @pytest.mark.parametrize("column_groups", [None, np.array([0, 1, 1])])
 @pytest.mark.parametrize("normalize", [True, False])
-def test_iw_transformer_fit_args(prior_strength, target, column_groups, normalize):
+@pytest.mark.parametrize("reweight_groups", [True, False])
+def test_iw_transformer_fit_args(
+    prior_strength, target, column_groups, normalize, reweight_groups
+):
     IWT = InformationWeightTransformer(
-        prior_strength=prior_strength, normalize=normalize
+        prior_strength=prior_strength,
+        normalize=normalize,
+        reweight_groups=reweight_groups,
     )
     result = IWT.fit_transform(test_matrix, target, column_groups=column_groups)
     transform = IWT.transform(test_matrix)
@@ -47,9 +52,34 @@ def test_iw_transformer_fit_args(prior_strength, target, column_groups, normaliz
 @pytest.mark.parametrize("target", [None, np.array([0, 1, 1])])
 @pytest.mark.parametrize("column_groups", [None, np.array([0, 1, 1])])
 @pytest.mark.parametrize("normalize", [True, False])
-def test_iw_transformer_zero_column(prior_strength, target, column_groups, normalize):
+@pytest.mark.parametrize("reweight_groups", [True, False])
+def test_iw_transformer_fit_args_on_array(
+    prior_strength, target, column_groups, normalize, reweight_groups
+):
     IWT = InformationWeightTransformer(
-        prior_strength=prior_strength, normalize=normalize
+        prior_strength=prior_strength,
+        normalize=normalize,
+        reweight_groups=reweight_groups,
+    )
+    test_array = scipy.sparse.csr_array(test_matrix)
+    result = IWT.fit_transform(test_array, target, column_groups=column_groups)
+    transform = IWT.transform(test_array)
+    assert np.allclose(result.toarray(), transform.toarray())
+    assert np.all(IWT.information_weights_ >= 0)
+
+
+@pytest.mark.parametrize("prior_strength", [0.1, 0.0])
+@pytest.mark.parametrize("target", [None, np.array([0, 1, 1])])
+@pytest.mark.parametrize("column_groups", [None, np.array([0, 1, 1])])
+@pytest.mark.parametrize("normalize", [True, False])
+@pytest.mark.parametrize("reweight_groups", [True, False])
+def test_iw_transformer_zero_column(
+    prior_strength, target, column_groups, normalize, reweight_groups
+):
+    IWT = InformationWeightTransformer(
+        prior_strength=prior_strength,
+        normalize=normalize,
+        reweight_groups=reweight_groups,
     )
     result = IWT.fit_transform(
         test_matrix_zero_column, target, column_groups=column_groups
@@ -63,9 +93,14 @@ def test_iw_transformer_zero_column(prior_strength, target, column_groups, norma
 @pytest.mark.parametrize("target", [None, np.array([0, 1, 1])])
 @pytest.mark.parametrize("column_groups", [None, np.array([0, 1, 1])])
 @pytest.mark.parametrize("normalize", [True, False])
-def test_iw_transformer_zero_row(prior_strength, target, column_groups, normalize):
+@pytest.mark.parametrize("reweight_groups", [True, False])
+def test_iw_transformer_zero_row(
+    prior_strength, target, column_groups, normalize, reweight_groups
+):
     IWT = InformationWeightTransformer(
-        prior_strength=prior_strength, normalize=normalize
+        prior_strength=prior_strength,
+        normalize=normalize,
+        reweight_groups=reweight_groups,
     )
     result = IWT.fit_transform(
         test_matrix_zero_row, target, column_groups=column_groups

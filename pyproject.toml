@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=80.0"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.12.20,<0.13"]
+build-backend = "uv_build"
 
 [project]
 name = "infoweight"
@@ -52,6 +52,10 @@ docs = [
 [project.urls]
 Homepage = "https://github.com/ryandewolfe33/infoweight"
 Repository = "https://github.com/ryandewolfe33/infoweight"
+
+[tool.uv.build-backend]
+module-name = "infoweight"
+module-root = ""
 
 [tool.ruff]
 line-length = 88

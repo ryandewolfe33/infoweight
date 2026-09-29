@@ -277,10 +277,6 @@ def information_weight(
     if reweight_groups and column_groups is not None:
         column_marginal = np.asarray(csc_data.sum(axis=0)).reshape(-1).astype("float64")
         column_marginal /= np.sum(column_marginal)
-        print(weights)
-        print(column_groups)
-        print(column_marginal)
-        print(column_marginal.shape)
         eiw = expected_information_weight(
             weights,
             column_groups,

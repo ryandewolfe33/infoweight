@@ -2,7 +2,7 @@
 Infoweight
 ===========
 
-.. |docs| image:: https://readthedocs.org/projects/infoweight/badge/?version=latest&style=plastic
+.. |docs| image:: https://readthedocs.org/projects/infoweight/badge/?version=latest
     :target: https://infoweight.readthedocs.io/en/latest/index.html
     :alt: Documentation Status
 

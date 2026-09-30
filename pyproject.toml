@@ -42,6 +42,7 @@ docs = [
     "nbsphinx>=0.9.8",
     "numpydoc>=1.11.0",
     "pandas>=2.3.3",
+    "pip>=26.2.1",
     "pyarrow>=25.0.1",
     "scikit-learn>=1.7.2",
     "sphinx>=8.1.3",

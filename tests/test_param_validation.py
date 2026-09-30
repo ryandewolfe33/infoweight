@@ -28,3 +28,10 @@ def test_incorrect_column_groups():
         information_weight(test_matrix, column_groups=np.array([0, 0, 0, 1]))
     with pytest.raises(ValueError):
         information_weight(test_matrix, column_groups=np.array([0, 0, 1, 1, 1, 1]))
+
+
+def test_incorrect_supervision_weight():
+    with pytest.raises(ValueError):
+        information_weight(test_matrix, prior_strength=-1)
+    with pytest.raises(ValueError):
+        information_weight(test_matrix, prior_strength=2)

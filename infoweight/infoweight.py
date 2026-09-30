@@ -266,6 +266,8 @@ def information_weight(
         raise ValueError(
             "The number of columns must match the length of column groups."
         )
+    if supervision_weight < 0 or supervision_weight > 1:
+        raise ValueError("supervision_weight must be at least 0 and at most 1.")
 
     csr_data = data.tocsr()
     baseline_probabilities = compute_baseline_probabilities(

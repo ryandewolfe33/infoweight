@@ -13,7 +13,6 @@ def column_kl_divergence(
     count_data,
     prior_probs,
     prior_strength,
-    target=None,
 ):
     """Function to compute the KL-divergence between a prior and a posterior distribution,
     the posterior computed as (1-prior_strength) * observed + prior_strength * prior.
@@ -67,6 +66,33 @@ def column_kl_divergence(
     return result
 
 
+@numba.njit(nogil=True, cache=True)
+def column_weight(
+    count_indices,
+    count_data,
+    baseline_probabilities,
+    prior_strength,
+    target=None,
+):
+    # Make observed target distribution if necessary
+    if target is not None:
+        target_counts = np.zeros(
+            baseline_probabilities.shape[0], dtype=count_data.dtype
+        )
+        for index, count in zip(count_indices, count_data):
+            if target[index] >= 0:
+                target_counts[target[index]] += count
+        count_indices = np.nonzero(target_counts)[0].astype(count_indices.dtype)
+        count_data = target_counts[count_indices]
+    weight = column_kl_divergence(
+        count_indices,
+        count_data,
+        baseline_probabilities,
+        prior_strength=prior_strength,
+    )
+    return weight
+
+
 @numba.njit(nogil=True, cache=True, parallel=True)
 def column_weights(
     indptr,
@@ -78,28 +104,16 @@ def column_weights(
     column_groups=None,
 ):
     n_cols = indptr.shape[0] - 1
-    weights = np.ones(n_cols)
+    weights = np.empty(n_cols)
     for i in numba.prange(n_cols):
-        group = 0
-        if column_groups is not None:
-            group = column_groups[i]
+        group = column_groups[i] if column_groups is not None else 0
         count_indices = indices[indptr[i] : indptr[i + 1]]
         count_data = data[indptr[i] : indptr[i + 1]]
-
-        # Make observed target distribution if necessary
-        if target is not None:
-            target_counts = np.zeros(baseline_probabilities.shape[1], dtype=data.dtype)
-            for index, count in zip(count_indices, count_data):
-                if target[index] >= 0:
-                    target_counts[target[index]] += count
-            count_indices = np.nonzero(target_counts)[0].astype(count_indices.dtype)
-            count_data = target_counts[count_indices]
-
-        weights[i] = column_kl_divergence(
+        weights[i] = column_weight(
             count_indices,
             count_data,
             baseline_probabilities[group, :],
-            prior_strength=prior_strength,
+            prior_strength,
             target=target,
         )
     return weights

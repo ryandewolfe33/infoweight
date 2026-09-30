@@ -19,16 +19,16 @@ def column_kl_divergence(
 
     Parameters
     ----------
-    count_indices
-        The indices of non-zero observed counts.
+    count_indices: NDArray
+        The indices of non-zero observed counts. Same length as count_data.
 
-    count_data
-        The number of observed counts.
+    count_data: NDArray
+        The number of observed counts. Same length as count_indices.
 
-    prior_probs
-        The prior probability distribution.
+    prior_probs: NDArray
+        The prior probability distribution. Length equal to the number of rows.
 
-    prior_strength
+    prior_strength: float
         The strength of the prior probability distribution in the bayesian update.
     """
     # Zero kl_divergence when non count data is observed
@@ -168,13 +168,14 @@ def compute_baseline_entropies(baseline_probabilities):
     return group_entropies
 
 
-@numba.njit(nogil=True)
+# @numba.njit(nogil=True)
 def normalize_by_baseline_entropy(
     weights,
     baseline_probabilities,
     column_groups=None,
 ):
     baseline_entropies = compute_baseline_entropies(baseline_probabilities)
+    print(baseline_entropies)
     if column_groups is None:
         weights /= baseline_entropies[0]
     else:
@@ -203,6 +204,7 @@ def information_weight(
     data,
     prior_strength=1e-4,
     target=None,
+    supervision_weight=0.95,
     column_groups=None,
     normalize=True,
     reweight_groups=True,
@@ -231,6 +233,11 @@ def information_weight(
         If supervised target labels are available, these can be used to define distributions
         over the target classes rather than over rows, allowing weights to be
         supervised and target based. If None then unsupervised weighting is used.
+
+    supervision_weight: float (optional, default=0.95)
+        Parameter for combining supervised and unsupervised weights when
+        targets are passed. Final weight is supervised_weight**supervision_weight
+        * unsupervised_weight**(1-supervision weight). Must be in (0, 1].
 
     column_groups: ndarray or None (optional, default=None)
         If columns have a natural grouping, i.e. cols 10-15 are a one-hot-encoding of a single
@@ -265,8 +272,8 @@ def information_weight(
         csr_data.indptr,
         csr_data.indices,
         csr_data.data,
-        target,
-        column_groups,
+        target=None,
+        column_groups=column_groups,
     )
 
     csc_data = data.tocsc()
@@ -277,7 +284,6 @@ def information_weight(
         csc_data.data,
         baseline_probabilities,
         prior_strength=prior_strength,
-        target=target,
         column_groups=column_groups,
     )
 
@@ -287,6 +293,37 @@ def information_weight(
             baseline_probabilities,
             column_groups=column_groups,
         )
+
+    if target is not None:
+        supervised_baseline_probabilities = compute_baseline_probabilities(
+            csr_data.indptr,
+            csr_data.indices,
+            csr_data.data,
+            target=target,
+            column_groups=column_groups,
+        )
+        supervised_weights = column_weights(
+            csc_data.indptr,
+            csc_data.indices,
+            csc_data.data,
+            supervised_baseline_probabilities,
+            prior_strength=prior_strength,
+            target=target,
+            column_groups=column_groups,
+        )
+        if normalize:
+            normalize_by_baseline_entropy(
+                supervised_weights,
+                supervised_baseline_probabilities,
+                column_groups=column_groups,
+            )
+        np.power(supervised_weights, supervision_weight, out=supervised_weights)
+        np.power(
+            weights,
+            1 - supervision_weight,
+            out=weights,
+        )
+        weights *= supervised_weights
 
     if reweight_groups and column_groups is not None:
         column_marginal = np.asarray(csc_data.sum(axis=0)).reshape(-1).astype("float64")
@@ -436,35 +473,19 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         if not scipy.sparse.isspmatrix(X):
             X = scipy.sparse.csr_matrix(X)
 
+        y_ = None
+        if y is not None and self.supervision_weight > 0:
+            y_ = self._format_y(y)
+
         self.information_weights_ = information_weight(
             X,
             self.prior_strength,
+            target=y_,
+            supervision_weight=self.supervision_weight,
             column_groups=column_groups,
             normalize=self.normalize,
             reweight_groups=self.reweight_groups,
         )
-
-        if y is not None and self.supervision_weight > 0:
-            y_ = self._format_y(y)
-
-            supervised_weights = information_weight(
-                X,
-                self.prior_strength,
-                target=y_,
-                column_groups=column_groups,
-                normalize=self.normalize,
-                reweight_groups=self.reweight_groups,
-            )
-
-            np.power(
-                supervised_weights, self.supervision_weight, out=supervised_weights
-            )
-            np.power(
-                self.information_weights_,
-                1 - self.supervision_weight,
-                out=self.information_weights_,
-            )
-            self.information_weights_ = supervised_weights * self.information_weights_
 
         self.information_weights_ = np.power(
             self.information_weights_, self.weight_power

@@ -16,6 +16,7 @@ package, but has been factored out to ease development.
    :caption: Examples
 
    papers
+   recipes
 
 .. toctree::
    :maxdepth: 1

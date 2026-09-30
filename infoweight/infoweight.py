@@ -168,14 +168,13 @@ def compute_baseline_entropies(baseline_probabilities):
     return group_entropies
 
 
-# @numba.njit(nogil=True)
+@numba.njit(nogil=True)
 def normalize_by_baseline_entropy(
     weights,
     baseline_probabilities,
     column_groups=None,
 ):
     baseline_entropies = compute_baseline_entropies(baseline_probabilities)
-    print(baseline_entropies)
     if column_groups is None:
         weights /= baseline_entropies[0]
     else:

@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.2"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.12.20,<0.13"]
+build-backend = "uv_build"
 
 [project]
 name = "infoweight"
@@ -23,8 +23,7 @@ dependencies = [
     "numpy>=2.0.0",
     "numba>=0.51",
     "scikit-learn>=0.22",
-    "scipy",
-    "numpydoc>=1.11.0",
+    "scipy>=1.8",
 ]
 
 [dependency-groups]
@@ -41,6 +40,7 @@ docs = [
     "jupyter>=1.1.1",
     "matplotlib>=3.10.9",
     "nbsphinx>=0.9.8",
+    "numpydoc>=1.11.0",
     "pandas>=2.3.3",
     "pip>=26.2.1",
     "pyarrow>=25.0.1",
@@ -53,6 +53,10 @@ docs = [
 [project.urls]
 Homepage = "https://github.com/ryandewolfe33/infoweight"
 Repository = "https://github.com/ryandewolfe33/infoweight"
+
+[tool.uv.build-backend]
+module-name = "infoweight"
+module-root = ""
 
 [tool.ruff]
 line-length = 88

@@ -2,15 +2,27 @@
 Infoweight
 ===========
 
-This package provides an information theoretic generalization of the `TFIDFTransformer`.
+.. |docs| image:: https://readthedocs.org/projects/infoweight/badge/?version=latest
+    :target: https://infoweight.readthedocs.io/en/latest/index.html
+    :alt: Documentation Status
+
+.. |build| image:: https://github.com/ryandewolfe33/infoweight/actions/workflows/ci.yaml/badge.svg
+    :target: https://github.com/ryandewolfe33/infoweight/actions/workflows/ci.yaml
+    :alt: Build Status
+
+|docs| |build|
 
 
-This package is still under development,
+This package provides the `InformationWeightTransformer`, an information theoretic generalization
+of the `TFIDFTransformer`.
+
+
 The `InformationWeightTransformer` was originally part of the
 `vectorizers <https://github.com/TutteInstitute/vectorizers>`_
-package, but has been factored out to ease development. You can find an
-overview and example of using the package in the
+package, but has been factored out to ease development. You can find alternate and helpful
+documentation, although likely out of data, at
 `vectorizers documentation <https://vectorizers.readthedocs.io/en/latest/>`_.
+
 
 ----------
 Installing

@@ -6,13 +6,14 @@ import scipy.sparse
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils.validation import validate_data
 
+DUMMY_FLOAT_ARRAY = np.empty(0, dtype=np.float64)
+DUMMY_FLOAT_1ROW_ARRAY = np.empty((1, 0), dtype=np.float64)
+NAN_ARRAY = np.array([np.nan])
+
 
 @numba.njit(nogil=True, cache=True)
 def column_kl_divergence(
-    count_indices,
-    count_data,
-    prior_probs,
-    prior_strength,
+    count_indices, count_data, marginal, prior_strength, marginal_entropy=np.nan
 ):
     """Function to compute the KL-divergence between a prior and a posterior distribution,
     the posterior computed as (1-prior_strength) * observed + prior_strength * prior.
@@ -25,11 +26,15 @@ def column_kl_divergence(
     count_data: NDArray
         The number of observed counts. Same length as count_indices.
 
-    prior_probs: NDArray
-        The prior probability distribution. Length equal to the number of rows.
+    marginal: NDArray
+        The marginal probability distribution. Length equal to the number of rows.
 
     prior_strength: float
-        The strength of the prior probability distribution in the bayesian update.
+        The strength of the prior (marginal) probability distribution in the bayesian update.
+
+    marginal_entropy: float (optional, default=np.nan)
+        Normalize the KL divergence by the entropy of the marginal distribution.
+        Only applied if entropy is passed.
     """
     # Zero kl_divergence when non count data is observed
     total_count = np.sum(count_data)
@@ -40,7 +45,7 @@ def column_kl_divergence(
     # Could compute as usual but precision causes issues
     posterior_equal_prior = True
     for index, count in zip(count_indices, count_data):
-        if count / total_count != prior_probs[index]:
+        if count / total_count != marginal[index]:
             posterior_equal_prior = False
             break
     if posterior_equal_prior:
@@ -53,43 +58,72 @@ def column_kl_divergence(
     # Initialize result as if every index were 0 count
     result = prior_strength * prior_info
     for index, count in zip(count_indices, count_data):
-        zero_count_contribution = prior_strength * prior_probs[index] * prior_info
+        zero_count_contribution = prior_strength * marginal[index] * prior_info
         result -= zero_count_contribution
         posterior_prob = (1 - prior_strength) * (
             count / total_count
-        ) + prior_strength * prior_probs[index]
+        ) + prior_strength * marginal[index]
         posterior_contribution = posterior_prob * np.log2(
-            posterior_prob / prior_probs[index]
+            posterior_prob / marginal[index]
         )
         result += posterior_contribution
 
+    if not np.isnan(marginal_entropy):
+        result /= marginal_entropy
+
     return result
+
+
+@numba.njit(nogil=True, cache=True)
+def target_counts(
+    count_indices,
+    count_data,
+    target,
+):
+    target_counts = np.zeros(np.max(target) + 1, dtype=count_data.dtype)
+    for index, count in zip(count_indices, count_data):
+        if target[index] >= 0:
+            target_counts[target[index]] += count
+    count_indices = np.nonzero(target_counts)[0].astype(count_indices.dtype)
+    count_data = target_counts[count_indices]
+    return count_indices, count_data
 
 
 @numba.njit(nogil=True, cache=True)
 def column_weight(
     count_indices,
     count_data,
-    baseline_probabilities,
+    marginal,
     prior_strength,
+    supervision_weight,
+    marginal_entropy=np.nan,
     target=None,
+    target_marginal=DUMMY_FLOAT_ARRAY,
+    target_marginal_entropy=np.nan,
 ):
-    # Make observed target distribution if necessary
-    if target is not None:
-        target_counts = np.zeros(
-            baseline_probabilities.shape[0], dtype=count_data.dtype
-        )
-        for index, count in zip(count_indices, count_data):
-            if target[index] >= 0:
-                target_counts[target[index]] += count
-        count_indices = np.nonzero(target_counts)[0].astype(count_indices.dtype)
-        count_data = target_counts[count_indices]
     weight = column_kl_divergence(
         count_indices,
         count_data,
-        baseline_probabilities,
-        prior_strength=prior_strength,
+        marginal,
+        prior_strength,
+        marginal_entropy,
     )
+    if target is not None:
+        target_indices, target_data = target_counts(
+            count_indices,
+            count_data,
+            target,
+        )
+        supervised_weight = column_kl_divergence(
+            target_indices,
+            target_data,
+            target_marginal,
+            prior_strength,
+            target_marginal_entropy,
+        )
+        weight = supervised_weight**supervision_weight * weight ** (
+            1 - supervision_weight
+        )
     return weight
 
 
@@ -98,23 +132,31 @@ def column_weights(
     indptr,
     indices,
     data,
-    baseline_probabilities,
+    marginal,
     prior_strength,
-    target=None,
+    supervision_weight,
     column_groups=None,
+    marginal_entropy=NAN_ARRAY,
+    target=None,
+    target_marginal=DUMMY_FLOAT_1ROW_ARRAY,
+    target_marginal_entropy=NAN_ARRAY,
 ):
     n_cols = indptr.shape[0] - 1
     weights = np.empty(n_cols)
     for i in numba.prange(n_cols):
-        group = column_groups[i] if column_groups is not None else 0
         count_indices = indices[indptr[i] : indptr[i + 1]]
         count_data = data[indptr[i] : indptr[i + 1]]
+        group = column_groups[i] if column_groups is not None else 0
         weights[i] = column_weight(
             count_indices,
             count_data,
-            baseline_probabilities[group, :],
+            marginal[group],
             prior_strength,
+            supervision_weight,
+            marginal_entropy=marginal_entropy[group],
             target=target,
+            target_marginal=target_marginal[group],
+            target_marginal_entropy=target_marginal_entropy[group],
         )
     return weights
 
@@ -206,7 +248,6 @@ def information_weight(
     supervision_weight=0.95,
     column_groups=None,
     normalize=True,
-    reweight_groups=True,
 ):
     """Compute information based weights for columns. The information weight
     is estimated as the amount of information gained by moving from a baseline
@@ -247,10 +288,6 @@ def information_weight(
         Normalize the information weight by dividing by the entropy of the marginal distribution.
         This normalizes the 'scale' so weights from different distributions can be combined.
 
-    reweight_groups: bool (optional, default=True)
-        Reweight the column_groups by multiplying each information weight by the expected
-        weight of the column group. This will up-weight informative column groups.
-
     Returns
     -------
     weights: ndarray of shape (n_features,)
@@ -269,72 +306,52 @@ def information_weight(
         raise ValueError("supervision_weight must be at least 0 and at most 1.")
 
     csr_data = data.tocsr()
-    baseline_probabilities = compute_baseline_probabilities(
+    marginal = compute_baseline_probabilities(
         csr_data.indptr,
         csr_data.indices,
         csr_data.data,
         target=None,
         column_groups=column_groups,
     )
-
-    csc_data = data.tocsc()
-    csc_data.sort_indices()
-    weights = column_weights(
-        csc_data.indptr,
-        csc_data.indices,
-        csc_data.data,
-        baseline_probabilities,
-        prior_strength=prior_strength,
-        column_groups=column_groups,
-    )
-
     if normalize:
-        normalize_by_baseline_entropy(
-            weights,
-            baseline_probabilities,
-            column_groups=column_groups,
-        )
+        marginal_entropy = compute_baseline_entropies(marginal)
+    else:
+        # nan means don't normalize
+        marginal_entropy = np.full(marginal.shape[0], np.nan)
 
     if target is not None:
-        supervised_baseline_probabilities = compute_baseline_probabilities(
+        target_marginal = compute_baseline_probabilities(
             csr_data.indptr,
             csr_data.indices,
             csr_data.data,
             target=target,
             column_groups=column_groups,
         )
-        supervised_weights = column_weights(
-            csc_data.indptr,
-            csc_data.indices,
-            csc_data.data,
-            supervised_baseline_probabilities,
-            prior_strength=prior_strength,
-            target=target,
-            column_groups=column_groups,
-        )
         if normalize:
-            normalize_by_baseline_entropy(
-                supervised_weights,
-                supervised_baseline_probabilities,
-                column_groups=column_groups,
-            )
-        np.power(supervised_weights, supervision_weight, out=supervised_weights)
-        np.power(
-            weights,
-            1 - supervision_weight,
-            out=weights,
-        )
-        weights *= supervised_weights
+            target_marginal_entropy = compute_baseline_entropies(target_marginal)
+        else:
+            # nan means don't normalize
+            target_marginal_entropy = np.full(target_marginal.shape[0], np.nan)
+    else:
+        target_marginal = DUMMY_FLOAT_1ROW_ARRAY
+        target_marginal_entropy = NAN_ARRAY
 
-    if reweight_groups and column_groups is not None:
-        column_marginal = np.asarray(csc_data.sum(axis=0)).reshape(-1).astype("float64")
-        column_marginal /= np.sum(column_marginal)
-        eiw = expected_information_weight(
-            weights,
-            column_groups,
-            column_marginal,
-        )
-        weights *= eiw[column_groups]
+    csc_data = data.tocsc()
+    csc_data.sort_indices()
+
+    weights = column_weights(
+        csc_data.indptr,
+        csc_data.indices,
+        csc_data.data,
+        marginal,
+        prior_strength,
+        supervision_weight,
+        column_groups=column_groups,
+        marginal_entropy=marginal_entropy,
+        target=target,
+        target_marginal=target_marginal,
+        target_marginal_entropy=target_marginal_entropy,
+    )
 
     return weights
 
@@ -485,8 +502,17 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
             supervision_weight=self.supervision_weight,
             column_groups=column_groups,
             normalize=self.normalize,
-            reweight_groups=self.reweight_groups,
         )
+
+        if self.reweight_groups and column_groups is not None:
+            column_marginal = np.asarray(X.sum(axis=0)).reshape(-1).astype("float64")
+            column_marginal /= np.sum(column_marginal)
+            self.group_weights_ = expected_information_weight(
+                self.information_weights_,
+                column_groups,
+                column_marginal,
+            )
+            self.information_weights_ *= self.group_weights_[column_groups]
 
         self.information_weights_ = np.power(
             self.information_weights_, self.weight_power

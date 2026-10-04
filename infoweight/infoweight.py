@@ -241,6 +241,228 @@ def expected_information_weight(
     return eiw
 
 
+@numba.njit(nogil=True)
+def sample_column(
+    count,
+    alias_array,
+    rng,
+):
+    counts = np.zeros(alias_array.shape[0], dtype=np.int64)
+    for _ in range(count):
+        idx = alias_sample(alias_array, rng)
+        counts[idx] += 1
+    count_indices = np.nonzero(counts)[0]
+    count_data = counts[count_indices]
+    return count_indices, count_data
+
+
+@numba.njit(cache=True)
+def alias_sampling_setup(probs):
+    """
+    Set up arrays for Walker's Alias Method.
+    """
+    n = len(probs)
+    # Store q and alias together for better caching later
+    result = np.empty((n, 2))
+    result[:, 0] = probs * n
+    q = result[:, 0]
+    alias = result[:, 1]
+
+    # Pre-allocate array stacks
+    smaller = np.zeros(n, dtype=np.int32)
+    larger = np.zeros(n, dtype=np.int32)
+    next_small_idx = 0
+    next_large_idx = 0
+
+    # Categorize indices into smaller or larger than 1.0
+    for i in range(n):
+        if q[i] < 1.0:
+            smaller[next_small_idx] = i
+            next_small_idx += 1
+        else:
+            larger[next_large_idx] = i
+            next_large_idx += 1
+
+    # Pair small outcomes with large outcomes
+    while next_small_idx > 0 and next_large_idx > 0:
+        next_small_idx -= 1
+        small = smaller[next_small_idx]
+        next_large_idx -= 1
+        large = larger[next_large_idx]
+
+        alias[small] = large
+        q[large] = (q[large] + q[small]) - 1.0
+
+        if q[large] < 1.0:
+            smaller[next_small_idx] = large
+            next_small_idx += 1
+        else:
+            larger[next_large_idx] = large
+            next_large_idx += 1
+
+    return result
+
+
+@numba.njit(nogil=True, inline="always")
+def alias_sample(alias_array, rng):
+    # alias_array contain q and alias vstacked
+    # 1. Uniformly pick a column index
+    u = rng.random()
+    idx = int(u * alias_array.shape[0])
+
+    # 2. Split selection based on the scaled probability threshold
+    coin = rng.random()
+    if coin >= alias_array[idx, 0]:
+        idx = int(alias_array[idx, 1])
+    return idx
+
+
+@numba.njit
+def sample_cdf(
+    n_samples,
+    rngs,
+    information_weights,
+    indptr,
+    indices,
+    data,
+    marginal,
+    prior_strength,
+    supervision_weight,
+    marginal_entropy=None,
+    target=None,
+    target_marginal=None,
+    target_marginal_entropy=None,
+    column_groups=None,
+):
+    n_cols = len(indptr) - 1
+    cdf = np.zeros(n_cols, dtype=np.float64)
+
+    alias_arrays = np.empty((marginal.shape[0], marginal.shape[1], 2))
+    for group in range(marginal.shape[0]):
+        alias_arrays[group, :, :] = alias_sampling_setup(marginal[group])
+
+    for col in numba.prange(n_cols):
+        group = column_groups[col] if column_groups is not None else 0
+        group_marginal = marginal[group]
+        group_marginal_entropy = (
+            marginal_entropy[group] if marginal_entropy is not None else np.nan
+        )
+        group_target_marginal = (
+            target_marginal[group] if target is not None else DUMMY_FLOAT_ARRAY
+        )
+        group_target_marginal_entropy = (
+            target_marginal_entropy[group] if target is not None else np.nan
+        )
+        alias_array = alias_arrays[group, :, :]
+        count = np.sum(data[indptr[col] : indptr[col + 1]])
+        rng = rngs[col]
+        for _ in range(n_samples):
+            sample_indices, sample_data = sample_column(
+                count,
+                alias_array,
+                rng,
+            )
+            sample_weight = column_weight(
+                sample_indices,
+                sample_data,
+                group_marginal,
+                prior_strength,
+                supervision_weight,
+                marginal_entropy=group_marginal_entropy,
+                target=target,
+                target_marginal=group_target_marginal,
+                target_marginal_entropy=group_target_marginal_entropy,
+            )
+            if sample_weight < information_weights[col]:
+                cdf[col] += 1
+    cdf /= n_samples
+    return cdf
+
+
+def is_stopword(
+    p,
+    n_samples,
+    data,
+    information_weights,
+    prior_strength,
+    supervision_weight,
+    normalize=True,
+    target=None,
+    column_groups=None,
+    rng=None,
+):
+    """Determine which columns (if any) are stopwords. A stopword is
+    a column that, with probability p, has less information than if it
+    were randomly sampled according to the marginal distribution.
+
+    Parameters
+    ----------
+    p: float
+    n_samples: int
+    data: sp.sparse_array | sp.sparse_matrix
+    information_weights: NDArray[float]
+    prior_strength: float
+    supervision_weight: float
+    normalize: bool
+    target: NDArray[int] | None
+    column_groups: NDArray[int] | None
+    rng: np.random.Generator | None
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    csr_data = data.tocsr()
+    marginal = compute_baseline_probabilities(
+        csr_data.indptr,
+        csr_data.indices,
+        csr_data.data,
+        target=None,
+        column_groups=column_groups,
+    )
+    target_marginal = (
+        compute_baseline_probabilities(
+            csr_data.indptr,
+            csr_data.indices,
+            csr_data.data,
+            target=target,
+            column_groups=column_groups,
+        )
+        if target is not None
+        else None
+    )
+
+    marginal_entropy = compute_baseline_entropies(marginal) if normalize else np.nan
+    target_marginal_entropy = (
+        compute_baseline_entropies(target_marginal)
+        if normalize and target is not None
+        else NAN_ARRAY
+    )
+
+    csc_data = data.tocsc()
+
+    # Spawn independent generators for each column so we can process in parallel
+    rngs = rng.spawn(data.shape[1])
+
+    cdf = sample_cdf(
+        n_samples,
+        rngs,
+        information_weights,
+        csc_data.indptr,
+        csc_data.indices,
+        csc_data.data,
+        marginal,
+        prior_strength,
+        supervision_weight,
+        marginal_entropy,
+        target,
+        target_marginal,
+        target_marginal_entropy,
+        column_groups,
+    )
+
+    return cdf < (1 - p)
+
+
 def information_weight(
     data,
     prior_strength=1e-4,
@@ -407,12 +629,18 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         supervision_weight=0.95,
         normalize=True,
         reweight_groups=True,
+        p=1,
+        n_samples=100,
+        rng=None,
     ):
         self.prior_strength = prior_strength
         self.weight_power = weight_power
         self.supervision_weight = supervision_weight
         self.normalize = normalize
         self.reweight_groups = reweight_groups
+        self.p = p
+        self.n_samples = n_samples
+        self.rng = rng
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()
@@ -504,8 +732,25 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
             normalize=self.normalize,
         )
 
+        self.stopword_ = None
+        if self.p < 1:
+            self.stopword_ = is_stopword(
+                self.p,
+                self.n_samples,
+                X,
+                self.information_weights_,
+                self.prior_strength,
+                self.supervision_weight,
+                normalize=self.normalize,
+                target=y_,
+                column_groups=column_groups,
+                rng=self.rng,
+            )
+
         if self.reweight_groups and column_groups is not None:
             column_marginal = np.asarray(X.sum(axis=0)).reshape(-1).astype("float64")
+            if self.stopword_ is not None:
+                column_marginal[~self.stopword_] = 0
             column_marginal /= np.sum(column_marginal)
             self.group_weights_ = expected_information_weight(
                 self.information_weights_,
@@ -527,6 +772,9 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
             result = X * self.information_weights_
         elif scipy.sparse.issparse(X):
             result = X.multiply(self.information_weights_.reshape(1, -1))
+            result = result.tocsc()
         else:
             raise ValueError("X should be a numpy array or scipy sparse array.")
+        if self.stopword_ is not None:
+            result = result[:, ~self.stopword_]
         return result

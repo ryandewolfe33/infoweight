@@ -139,35 +139,16 @@ def column_weights(
     target=None,
     column_groups=None,
 ):
-    marginal = compute_baseline_probabilities(
-        indptr,
-        indices,
-        data,
-        n_rows,
-        target=None,
-        column_groups=column_groups,
-    )
-    target_marginal = (
-        compute_baseline_probabilities(
+    marginal, marginal_entropy, target_marginal, target_marginal_entropy = (
+        make_marginals(
             indptr,
             indices,
             data,
             n_rows,
-            target=target,
-            column_groups=column_groups,
+            normalize,
+            target,
+            column_groups,
         )
-        if target is not None
-        else np.empty((marginal.shape[0], 0), dtype=marginal.dtype)
-    )
-    marginal_entropy = (
-        compute_baseline_entropies(marginal)
-        if normalize
-        else np.full(marginal.shape[0], np.nan, dtype=marginal.dtype)
-    )
-    target_marginal_entropy = (
-        compute_baseline_entropies(target_marginal)
-        if normalize and target is not None
-        else np.full(target_marginal.shape[0], np.nan, dtype=target_marginal.dtype)
     )
 
     n_cols = indptr.shape[0] - 1
@@ -191,7 +172,7 @@ def column_weights(
 
 
 @numba.njit(nogil=True, cache=True)
-def compute_baseline_probabilities(
+def compute_marginal(
     indptr,
     indices,
     data,
@@ -209,7 +190,7 @@ def compute_baseline_probabilities(
     """
     n_groups = 1 if column_groups is None else np.max(column_groups) + 1
     n_targets = n_rows if target is None else np.max(target) + 1
-    counts = np.zeros((n_groups, n_targets), dtype=data.dtype)
+    marginal = np.zeros((n_groups, n_targets), dtype=np.float64)
     for col in range(indptr.shape[0] - 1):
         group = 0 if column_groups is None else column_groups[col]
         for i in range(indptr[col], indptr[col + 1]):
@@ -217,36 +198,62 @@ def compute_baseline_probabilities(
             this_target = target[row] if target is not None else row
             if this_target < 0:
                 continue
-            counts[group, this_target] += data[i]
-    probabilities = counts / np.sum(counts, axis=1).reshape(-1, 1)
-    return probabilities
-
-
-@numba.njit(nogil=True, parallel=True)
-def compute_baseline_entropies(baseline_probabilities):
-    group_entropies = np.empty(
-        baseline_probabilities.shape[0], dtype=baseline_probabilities.dtype
-    )
-    for i in numba.prange(baseline_probabilities.shape[0]):
-        marginal = baseline_probabilities[i, :]
-        marginal = marginal[marginal > 0]
-        group_entropies[i] = -np.sum(marginal * np.log2(marginal))
-    return group_entropies
+            marginal[group, this_target] += data[i]
+    marginal /= np.sum(marginal, axis=1).reshape(-1, 1)
+    return marginal
 
 
 @numba.njit(nogil=True)
-def normalize_by_baseline_entropy(
-    weights,
-    baseline_probabilities,
+def compute_marginal_entropy(marginal):
+    group_entropy = np.empty(marginal.shape[0], dtype=marginal.dtype)
+    for i in range(marginal.shape[0]):
+        m = marginal[i, :]
+        m = m[m > 0]  # 0s cause -inf in log, but are multiplied by 0
+        group_entropy[i] = -np.sum(marginal * np.log2(marginal))
+    return group_entropy
+
+
+@numba.njit(nogil=True, cache=True)
+def make_marginals(
+    indptr,
+    indices,
+    data,
+    n_rows,
+    normalize=True,
+    target=None,
     column_groups=None,
 ):
-    baseline_entropies = compute_baseline_entropies(baseline_probabilities)
-    if column_groups is None:
-        weights /= baseline_entropies[0]
-    else:
-        for i in numba.prange(weights.shape[0]):
-            weights[i] /= baseline_entropies[column_groups[i]]
-    return weights
+    marginal = compute_marginal(
+        indptr,
+        indices,
+        data,
+        n_rows,
+        target=None,
+        column_groups=column_groups,
+    )
+    marginal_entropy = (
+        compute_marginal_entropy(marginal)
+        if normalize
+        else np.full(marginal.shape[0], np.nan)
+    )
+    target_marginal = (
+        compute_marginal(
+            indptr,
+            indices,
+            data,
+            n_rows,
+            target=target,
+            column_groups=column_groups,
+        )
+        if target is not None
+        else np.empty((marginal.shape[0], 0))
+    )
+    target_marginal_entropy = (
+        compute_marginal_entropy(target_marginal)
+        if normalize and target is not None
+        else np.full(target_marginal.shape[0], np.nan)
+    )
+    return marginal, marginal_entropy, target_marginal, target_marginal_entropy
 
 
 @numba.njit
@@ -356,35 +363,16 @@ def sample_cdf(
     target=None,
     column_groups=None,
 ):
-    marginal = compute_baseline_probabilities(
-        indptr,
-        indices,
-        data,
-        n_rows,
-        target=None,
-        column_groups=column_groups,
-    )
-    target_marginal = (
-        compute_baseline_probabilities(
+    marginal, marginal_entropy, target_marginal, target_marginal_entropy = (
+        make_marginals(
             indptr,
             indices,
             data,
             n_rows,
-            target=target,
-            column_groups=column_groups,
+            normalize,
+            target,
+            column_groups,
         )
-        if target is not None
-        else np.empty((marginal.shape[0], 0))
-    )
-    marginal_entropy = (
-        compute_baseline_entropies(marginal)
-        if normalize
-        else np.full(marginal.shape[0], np.nan)
-    )
-    target_marginal_entropy = (
-        compute_baseline_entropies(target_marginal)
-        if normalize and target is not None
-        else np.full(target_marginal.shape[0], np.nan)
     )
 
     alias_arrays = np.empty((marginal.shape[0], marginal.shape[1], 2))
@@ -409,10 +397,10 @@ def sample_cdf(
                 marginal[group],
                 prior_strength,
                 supervision_weight,
-                marginal_entropy=marginal_entropy[group],
-                target=target,
-                target_marginal=target_marginal[group],
-                target_marginal_entropy=target_marginal_entropy[group],
+                marginal_entropy[group],
+                target,
+                target_marginal[group],
+                target_marginal_entropy[group],
             )
             if sample_weight < information_weights[col]:
                 cdf[col] += 1

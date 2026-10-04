@@ -132,15 +132,44 @@ def column_weights(
     indptr,
     indices,
     data,
-    marginal,
+    n_rows,
     prior_strength,
     supervision_weight,
-    column_groups=None,
-    marginal_entropy=NAN_ARRAY,
+    normalize=True,
     target=None,
-    target_marginal=DUMMY_FLOAT_1ROW_ARRAY,
-    target_marginal_entropy=NAN_ARRAY,
+    column_groups=None,
 ):
+    marginal = compute_baseline_probabilities(
+        indptr,
+        indices,
+        data,
+        n_rows,
+        target=None,
+        column_groups=column_groups,
+    )
+    target_marginal = (
+        compute_baseline_probabilities(
+            indptr,
+            indices,
+            data,
+            n_rows,
+            target=target,
+            column_groups=column_groups,
+        )
+        if target is not None
+        else np.empty((marginal.shape[0], 0), dtype=marginal.dtype)
+    )
+    marginal_entropy = (
+        compute_baseline_entropies(marginal)
+        if normalize
+        else np.full(marginal.shape[0], np.nan, dtype=marginal.dtype)
+    )
+    target_marginal_entropy = (
+        compute_baseline_entropies(target_marginal)
+        if normalize and target is not None
+        else np.full(target_marginal.shape[0], np.nan, dtype=target_marginal.dtype)
+    )
+
     n_cols = indptr.shape[0] - 1
     weights = np.empty(n_cols)
     for i in numba.prange(n_cols):
@@ -161,11 +190,12 @@ def column_weights(
     return weights
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, cache=True)
 def compute_baseline_probabilities(
     indptr,
     indices,
     data,
+    n_rows,
     target=None,
     column_groups=None,
 ):
@@ -175,26 +205,18 @@ def compute_baseline_probabilities(
     (n column groups) x (n targets) matrix (supervised) where each
     row is the marginal of the column group.
 
-    indptr, indices, and data arrays are from csr format.
+    indptr, indices, and data arrays are from csc format.
     """
-    n_groups = 1
-    if column_groups is not None:
-        n_groups = column_groups.max() + 1
-    n_targets = indptr.shape[0] - 1
-    if target is not None:
-        n_targets = target.max() + 1
+    n_groups = 1 if column_groups is None else np.max(column_groups) + 1
+    n_targets = n_rows if target is None else np.max(target) + 1
     counts = np.zeros((n_groups, n_targets), dtype=data.dtype)
-    for row in range(indptr.shape[0] - 1):
-        this_target = row
-        if target is not None:
-            if target[row] >= 0:
-                this_target = target[row]
-            else:
+    for col in range(indptr.shape[0] - 1):
+        group = 0 if column_groups is None else column_groups[col]
+        for i in range(indptr[col], indptr[col + 1]):
+            row = indices[i]
+            this_target = target[row] if target is not None else row
+            if this_target < 0:
                 continue
-        for i in range(indptr[row], indptr[row + 1]):
-            group = 0
-            if column_groups is not None:
-                group = column_groups[indices[i]]
             counts[group, this_target] += data[i]
     probabilities = counts / np.sum(counts, axis=1).reshape(-1, 1)
     return probabilities
@@ -202,7 +224,9 @@ def compute_baseline_probabilities(
 
 @numba.njit(nogil=True, parallel=True)
 def compute_baseline_entropies(baseline_probabilities):
-    group_entropies = np.empty(baseline_probabilities.shape[0], dtype="float64")
+    group_entropies = np.empty(
+        baseline_probabilities.shape[0], dtype=baseline_probabilities.dtype
+    )
     for i in numba.prange(baseline_probabilities.shape[0]):
         marginal = baseline_probabilities[i, :]
         marginal = marginal[marginal > 0]
@@ -307,7 +331,7 @@ def alias_sampling_setup(probs):
 def alias_sample(alias_array, rng):
     # alias_array contain q and alias vstacked
     # 1. Uniformly pick a column index
-    u = rng.random()
+    u = rng.integers(alias_array.shape[0])
     idx = int(u * alias_array.shape[0])
 
     # 2. Split selection based on the scaled probability threshold
@@ -325,34 +349,51 @@ def sample_cdf(
     indptr,
     indices,
     data,
-    marginal,
-    prior_strength,
-    supervision_weight,
-    marginal_entropy=None,
+    n_rows,
+    prior_strength=1e-4,
+    supervision_weight=0.95,
+    normalize=True,
     target=None,
-    target_marginal=None,
-    target_marginal_entropy=None,
     column_groups=None,
 ):
-    n_cols = len(indptr) - 1
-    cdf = np.zeros(n_cols, dtype=np.float64)
+    marginal = compute_baseline_probabilities(
+        indptr,
+        indices,
+        data,
+        n_rows,
+        target=None,
+        column_groups=column_groups,
+    )
+    target_marginal = (
+        compute_baseline_probabilities(
+            indptr,
+            indices,
+            data,
+            n_rows,
+            target=target,
+            column_groups=column_groups,
+        )
+        if target is not None
+        else np.empty((marginal.shape[0], 0))
+    )
+    marginal_entropy = (
+        compute_baseline_entropies(marginal)
+        if normalize
+        else np.full(marginal.shape[0], np.nan)
+    )
+    target_marginal_entropy = (
+        compute_baseline_entropies(target_marginal)
+        if normalize and target is not None
+        else np.full(target_marginal.shape[0], np.nan)
+    )
 
     alias_arrays = np.empty((marginal.shape[0], marginal.shape[1], 2))
     for group in range(marginal.shape[0]):
         alias_arrays[group, :, :] = alias_sampling_setup(marginal[group])
 
+    n_cols = len(indptr) - 1
+    cdf = np.zeros(n_cols, dtype=np.float64)
     for col in numba.prange(n_cols):
-        group = column_groups[col] if column_groups is not None else 0
-        group_marginal = marginal[group]
-        group_marginal_entropy = (
-            marginal_entropy[group] if marginal_entropy is not None else np.nan
-        )
-        group_target_marginal = (
-            target_marginal[group] if target is not None else DUMMY_FLOAT_ARRAY
-        )
-        group_target_marginal_entropy = (
-            target_marginal_entropy[group] if target is not None else np.nan
-        )
         alias_array = alias_arrays[group, :, :]
         count = np.sum(data[indptr[col] : indptr[col + 1]])
         rng = rngs[col]
@@ -365,13 +406,13 @@ def sample_cdf(
             sample_weight = column_weight(
                 sample_indices,
                 sample_data,
-                group_marginal,
+                marginal[group],
                 prior_strength,
                 supervision_weight,
-                marginal_entropy=group_marginal_entropy,
+                marginal_entropy=marginal_entropy[group],
                 target=target,
-                target_marginal=group_target_marginal,
-                target_marginal_entropy=group_target_marginal_entropy,
+                target_marginal=target_marginal[group],
+                target_marginal_entropy=target_marginal_entropy[group],
             )
             if sample_weight < information_weights[col]:
                 cdf[col] += 1
@@ -410,38 +451,10 @@ def is_stopword(
     """
     if rng is None:
         rng = np.random.default_rng()
-
-    csr_data = data.tocsr()
-    marginal = compute_baseline_probabilities(
-        csr_data.indptr,
-        csr_data.indices,
-        csr_data.data,
-        target=None,
-        column_groups=column_groups,
-    )
-    target_marginal = (
-        compute_baseline_probabilities(
-            csr_data.indptr,
-            csr_data.indices,
-            csr_data.data,
-            target=target,
-            column_groups=column_groups,
-        )
-        if target is not None
-        else None
-    )
-
-    marginal_entropy = compute_baseline_entropies(marginal) if normalize else np.nan
-    target_marginal_entropy = (
-        compute_baseline_entropies(target_marginal)
-        if normalize and target is not None
-        else NAN_ARRAY
-    )
-
-    csc_data = data.tocsc()
-
     # Spawn independent generators for each column so we can process in parallel
     rngs = rng.spawn(data.shape[1])
+
+    csc_data = data.tocsc()
 
     cdf = sample_cdf(
         n_samples,
@@ -450,13 +463,11 @@ def is_stopword(
         csc_data.indptr,
         csc_data.indices,
         csc_data.data,
-        marginal,
+        csc_data.shape[0],
         prior_strength,
         supervision_weight,
-        marginal_entropy,
+        normalize,
         target,
-        target_marginal,
-        target_marginal_entropy,
         column_groups,
     )
 
@@ -527,52 +538,18 @@ def information_weight(
     if supervision_weight < 0 or supervision_weight > 1:
         raise ValueError("supervision_weight must be at least 0 and at most 1.")
 
-    csr_data = data.tocsr()
-    marginal = compute_baseline_probabilities(
-        csr_data.indptr,
-        csr_data.indices,
-        csr_data.data,
-        target=None,
-        column_groups=column_groups,
-    )
-    if normalize:
-        marginal_entropy = compute_baseline_entropies(marginal)
-    else:
-        # nan means don't normalize
-        marginal_entropy = np.full(marginal.shape[0], np.nan)
-
-    if target is not None:
-        target_marginal = compute_baseline_probabilities(
-            csr_data.indptr,
-            csr_data.indices,
-            csr_data.data,
-            target=target,
-            column_groups=column_groups,
-        )
-        if normalize:
-            target_marginal_entropy = compute_baseline_entropies(target_marginal)
-        else:
-            # nan means don't normalize
-            target_marginal_entropy = np.full(target_marginal.shape[0], np.nan)
-    else:
-        target_marginal = DUMMY_FLOAT_1ROW_ARRAY
-        target_marginal_entropy = NAN_ARRAY
-
     csc_data = data.tocsc()
-    csc_data.sort_indices()
 
     weights = column_weights(
         csc_data.indptr,
         csc_data.indices,
         csc_data.data,
-        marginal,
+        csc_data.shape[0],
         prior_strength,
         supervision_weight,
-        column_groups=column_groups,
-        marginal_entropy=marginal_entropy,
-        target=target,
-        target_marginal=target_marginal,
-        target_marginal_entropy=target_marginal_entropy,
+        normalize,
+        target,
+        column_groups,
     )
 
     return weights

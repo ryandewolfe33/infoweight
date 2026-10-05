@@ -268,7 +268,7 @@ def expected_information_weight(
     for weight, group, prob in zip(weights, column_groups, column_marginal):
         eiw[group] += prob * weight
         group_total_probs[group] += prob
-    eiw /= group_total_probs
+    eiw[group_total_probs > 0] /= group_total_probs[group_total_probs > 0]
     return eiw
 
 
@@ -338,7 +338,7 @@ def alias_sampling_setup(probs):
 def alias_sample(alias_array, rng):
     # alias_array contain q and alias vstacked
     # 1. Uniformly pick a column index
-    u = rng.integers(alias_array.shape[0])
+    u = rng.random()
     idx = int(u * alias_array.shape[0])
 
     # 2. Split selection based on the scaled probability threshold
@@ -352,7 +352,6 @@ def alias_sample(alias_array, rng):
 def sample_cdf(
     n_samples,
     rngs,
-    information_weights,
     indptr,
     indices,
     data,
@@ -362,29 +361,61 @@ def sample_cdf(
     normalize=True,
     target=None,
     column_groups=None,
+    uniform=False,
 ):
-    marginal, marginal_entropy, target_marginal, target_marginal_entropy = (
-        make_marginals(
-            indptr,
-            indices,
-            data,
-            n_rows,
-            normalize,
-            target,
-            column_groups,
+    # Uniform marginal does not require column groups
+    # Must happen out here to make prange happy
+    n_cols = len(indptr) - 1
+    if uniform or column_groups is None:
+        column_groups = np.zeros(n_cols, dtype=np.int64)
+    if not uniform:
+        marginal, marginal_entropy, target_marginal, target_marginal_entropy = (
+            make_marginals(
+                indptr,
+                indices,
+                data,
+                n_rows,
+                normalize,
+                target,
+                column_groups,
+            )
         )
-    )
+    else:
+        uniform_indices = np.arange(n_rows, dtype=indices.dtype)
+        uniform_indptr = np.array([0, n_rows])
+        uniform_data = np.ones(n_rows, dtype=data.dtype)
+        marginal, marginal_entropy, target_marginal, target_marginal_entropy = (
+            make_marginals(
+                uniform_indptr,
+                uniform_indices,
+                uniform_data,
+                n_rows,
+                normalize,
+                target,
+            )
+        )
 
     alias_arrays = np.empty((marginal.shape[0], marginal.shape[1], 2))
     for group in range(marginal.shape[0]):
         alias_arrays[group, :, :] = alias_sampling_setup(marginal[group])
 
-    n_cols = len(indptr) - 1
     cdf = np.zeros(n_cols, dtype=np.float64)
     for col in numba.prange(n_cols):
+        group = column_groups[col]
         alias_array = alias_arrays[group, :, :]
         count = np.sum(data[indptr[col] : indptr[col + 1]])
         rng = rngs[col]
+        iw = column_weight(
+            indices[indptr[col] : indptr[col + 1]],
+            data[indptr[col] : indptr[col + 1]],
+            marginal[group],
+            prior_strength,
+            supervision_weight,
+            marginal_entropy[group],
+            target,
+            target_marginal[group],
+            target_marginal_entropy[group],
+        )
         for _ in range(n_samples):
             sample_indices, sample_data = sample_column(
                 count,
@@ -402,7 +433,7 @@ def sample_cdf(
                 target_marginal[group],
                 target_marginal_entropy[group],
             )
-            if sample_weight < information_weights[col]:
+            if sample_weight < iw:
                 cdf[col] += 1
     cdf /= n_samples
     return cdf
@@ -412,12 +443,12 @@ def is_stopword(
     p,
     n_samples,
     data,
-    information_weights,
-    prior_strength,
-    supervision_weight,
+    prior_strength=1e-4,
+    supervision_weight=0.95,
     normalize=True,
     target=None,
     column_groups=None,
+    method="measured",
     rng=None,
 ):
     """Determine which columns (if any) are stopwords. A stopword is
@@ -429,14 +460,17 @@ def is_stopword(
     p: float
     n_samples: int
     data: sp.sparse_array | sp.sparse_matrix
-    information_weights: NDArray[float]
     prior_strength: float
     supervision_weight: float
     normalize: bool
     target: NDArray[int] | None
     column_groups: NDArray[int] | None
+    method="measured"
     rng: np.random.Generator | None
     """
+    if method not in ["measured", "uniform", "either"]:
+        raise ValueError("method must be one of 'measured', 'uniform', or 'either'.")
+
     if rng is None:
         rng = np.random.default_rng()
     # Spawn independent generators for each column so we can process in parallel
@@ -444,22 +478,45 @@ def is_stopword(
 
     csc_data = data.tocsc()
 
-    cdf = sample_cdf(
-        n_samples,
-        rngs,
-        information_weights,
-        csc_data.indptr,
-        csc_data.indices,
-        csc_data.data,
-        csc_data.shape[0],
-        prior_strength,
-        supervision_weight,
-        normalize,
-        target,
-        column_groups,
-    )
+    if method == "measured" or method == "either":
+        measured_cdf = sample_cdf(
+            n_samples,
+            rngs,
+            csc_data.indptr,
+            csc_data.indices,
+            csc_data.data,
+            csc_data.shape[0],
+            prior_strength,
+            supervision_weight,
+            normalize,
+            target,
+            column_groups,
+            False,
+        )
+        measured_stopwords = measured_cdf < (1 - p)
+        if method == "measured":
+            return measured_stopwords
 
-    return cdf < (1 - p)
+    if method == "uniform" or method == "either":
+        uniform_cdf = sample_cdf(
+            n_samples,
+            rngs,
+            csc_data.indptr,
+            csc_data.indices,
+            csc_data.data,
+            csc_data.shape[0],
+            prior_strength,
+            supervision_weight,
+            normalize,
+            target,
+            column_groups,
+            True,
+        )
+        uniform_stopwords = uniform_cdf < (1 - p)
+        if method == "uniform":
+            return uniform_stopwords
+
+    return measured_stopwords + uniform_stopwords
 
 
 def information_weight(
@@ -579,6 +636,31 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         marginal distribution like is done in supervised mode (when
         supervision weight < 1).
 
+    reweight_group: bool (optional, default=True)
+        Flag to reweight each group by the expected information weight
+        according to the column marginal. If p<1 and stopwords are
+        removed, expected information is computed after dropping
+        stopwords.
+
+    p: float (optional, default=1)
+        CDF threshold below which a column is a stopword. Setting p=1
+        results in no stopwords and the computation is skipped. Sampling
+        the CDF is much slower than computing the information weight so
+        setting p<1 will increase the runtime.
+
+    n_samples: int (optional, default=100)
+        Number of samples used in the CDF computation.
+
+    method: str (optional, default="measured")
+        Method to determine if a word is a stopword. method='measured' uses
+        samples random column distributions according to the observed marginal.
+        Setting method='uniform' samples from a uniform marginal, and uses the
+        uniform marginal to compute the information weight. Setting
+        method='either' give stopwords that satisfy either of the other
+        methods.
+
+    rng: np.random.Generator | None (optional, default=None)
+
     Attributes
     ----------
 
@@ -596,6 +678,7 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         reweight_groups=True,
         p=1,
         n_samples=100,
+        method="measured",
         rng=None,
     ):
         self.prior_strength = prior_strength
@@ -605,6 +688,7 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         self.reweight_groups = reweight_groups
         self.p = p
         self.n_samples = n_samples
+        self.method = method
         self.rng = rng
 
     def __sklearn_tags__(self):
@@ -703,19 +787,26 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
                 self.p,
                 self.n_samples,
                 X,
-                self.information_weights_,
                 self.prior_strength,
                 self.supervision_weight,
-                normalize=self.normalize,
-                target=y_,
-                column_groups=column_groups,
-                rng=self.rng,
+                self.normalize,
+                y_,
+                column_groups,
+                self.method,
+                self.rng,
             )
+            self.information_weights_[self.stopword_] = 0
 
-        if self.reweight_groups and column_groups is not None:
+        print(self.information_weights_)
+
+        if (
+            self.reweight_groups
+            and column_groups is not None
+            and not np.all(self.stopword_)
+        ):
             column_marginal = np.asarray(X.sum(axis=0)).reshape(-1).astype("float64")
             if self.stopword_ is not None:
-                column_marginal[~self.stopword_] = 0
+                column_marginal[self.stopword_] = 0
             column_marginal /= np.sum(column_marginal)
             self.group_weights_ = expected_information_weight(
                 self.information_weights_,

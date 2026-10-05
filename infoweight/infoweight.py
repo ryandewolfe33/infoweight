@@ -522,10 +522,10 @@ def is_stopword(
 def information_weight(
     data,
     prior_strength=1e-4,
-    target=None,
     supervision_weight=0.95,
-    column_groups=None,
     normalize=True,
+    target=None,
+    column_groups=None,
 ):
     """Compute information based weights for columns. The information weight
     is estimated as the amount of information gained by moving from a baseline
@@ -547,24 +547,24 @@ def information_weight(
         How strongly to weight the prior when doing a Bayesian update to
         derive a model based on observed counts of a column.
 
-    target: ndarray or None (optional, default=None)
-        If supervised target labels are available, these can be used to define distributions
-        over the target classes rather than over rows, allowing weights to be
-        supervised and target based. If None then unsupervised weighting is used.
-
     supervision_weight: float (optional, default=0.95)
         Parameter for combining supervised and unsupervised weights when
         targets are passed. Final weight is supervised_weight**supervision_weight
         * unsupervised_weight**(1-supervision weight). Must be in (0, 1].
 
+    normalize: bool (optional, default=True)
+        Normalize the information weight by dividing by the entropy of the marginal distribution.
+        This normalizes the 'scale' so weights from different distributions can be combined.
+
+    target: ndarray or None (optional, default=None)
+        If supervised target labels are available, these can be used to define distributions
+        over the target classes rather than over rows, allowing weights to be
+        supervised and target based. If None then unsupervised weighting is used.
+
     column_groups: ndarray or None (optional, default=None)
         If columns have a natural grouping, i.e. cols 10-15 are a one-hot-encoding of a single
         categorical variable, we should compare the column distribution to the within group
         marginal. If passed None then all columns have the same group.
-
-    normalize: bool (optional, default=True)
-        Normalize the information weight by dividing by the entropy of the marginal distribution.
-        This normalizes the 'scale' so weights from different distributions can be combined.
 
     Returns
     -------
@@ -667,6 +667,14 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
     information_weights_: ndarray of shape (n_features,)
         The learned weights to be applied to columns based on the amount
         of information provided by the column.
+
+    stopword_: ndarray of shape (n_features,)
+        Boolean array that notes if each column is a stopword. If p=1,
+        no columns can be stopwords, so stopword_ is set to None.
+
+    group_weights_: ndarray of shape (n_groups,)
+        Array holding the expected information of each column group. Only
+        set if reweight_groups=True and column_groups is not None.
     """
 
     def __init__(
@@ -766,7 +774,7 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         """
         X, y = self._validate_data(X, y, reset=True)
         if not scipy.sparse.isspmatrix(X):
-            X = scipy.sparse.csr_matrix(X)
+            X = scipy.sparse.csc_matrix(X)
 
         y_ = None
         if y is not None and self.supervision_weight > 0:
@@ -795,9 +803,6 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
                 self.method,
                 self.rng,
             )
-            self.information_weights_[self.stopword_] = 0
-
-        print(self.information_weights_)
 
         if (
             self.reweight_groups

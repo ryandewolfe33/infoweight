@@ -6,31 +6,35 @@ import scipy.sparse
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils.validation import validate_data
 
+DUMMY_FLOAT_ARRAY = np.empty(0, dtype=np.float64)
+DUMMY_FLOAT_1ROW_ARRAY = np.empty((1, 0), dtype=np.float64)
+NAN_ARRAY = np.array([np.nan])
+
 
 @numba.njit(nogil=True, cache=True)
 def column_kl_divergence(
-    count_indices,
-    count_data,
-    prior_probs,
-    prior_strength,
-    target=None,
+    count_indices, count_data, marginal, prior_strength, marginal_entropy=np.nan
 ):
     """Function to compute the KL-divergence between a prior and a posterior distribution,
     the posterior computed as (1-prior_strength) * observed + prior_strength * prior.
 
     Parameters
     ----------
-    count_indices
-        The indices of non-zero observed counts.
+    count_indices: NDArray
+        The indices of non-zero observed counts. Same length as count_data.
 
-    count_data
-        The number of observed counts.
+    count_data: NDArray
+        The number of observed counts. Same length as count_indices.
 
-    prior_probs
-        The prior probability distribution.
+    marginal: NDArray
+        The marginal probability distribution. Length equal to the number of rows.
 
-    prior_strength
-        The strength of the prior probability distribution in the bayesian update.
+    prior_strength: float
+        The strength of the prior (marginal) probability distribution in the bayesian update.
+
+    marginal_entropy: float (optional, default=np.nan)
+        Normalize the KL divergence by the entropy of the marginal distribution.
+        Only applied if entropy is passed.
     """
     # Zero kl_divergence when non count data is observed
     total_count = np.sum(count_data)
@@ -41,7 +45,7 @@ def column_kl_divergence(
     # Could compute as usual but precision causes issues
     posterior_equal_prior = True
     for index, count in zip(count_indices, count_data):
-        if count / total_count != prior_probs[index]:
+        if count / total_count != marginal[index]:
             posterior_equal_prior = False
             break
     if posterior_equal_prior:
@@ -54,17 +58,73 @@ def column_kl_divergence(
     # Initialize result as if every index were 0 count
     result = prior_strength * prior_info
     for index, count in zip(count_indices, count_data):
-        zero_count_contribution = prior_strength * prior_probs[index] * prior_info
+        zero_count_contribution = prior_strength * marginal[index] * prior_info
         result -= zero_count_contribution
         posterior_prob = (1 - prior_strength) * (
             count / total_count
-        ) + prior_strength * prior_probs[index]
+        ) + prior_strength * marginal[index]
         posterior_contribution = posterior_prob * np.log2(
-            posterior_prob / prior_probs[index]
+            posterior_prob / marginal[index]
         )
         result += posterior_contribution
 
+    if not np.isnan(marginal_entropy):
+        result /= marginal_entropy
+
     return result
+
+
+@numba.njit(nogil=True, cache=True)
+def target_counts(
+    count_indices,
+    count_data,
+    target,
+):
+    target_counts = np.zeros(np.max(target) + 1, dtype=count_data.dtype)
+    for index, count in zip(count_indices, count_data):
+        if target[index] >= 0:
+            target_counts[target[index]] += count
+    count_indices = np.nonzero(target_counts)[0].astype(count_indices.dtype)
+    count_data = target_counts[count_indices]
+    return count_indices, count_data
+
+
+@numba.njit(nogil=True, cache=True)
+def column_weight(
+    count_indices,
+    count_data,
+    marginal,
+    prior_strength,
+    supervision_weight,
+    marginal_entropy=np.nan,
+    target=None,
+    target_marginal=DUMMY_FLOAT_ARRAY,
+    target_marginal_entropy=np.nan,
+):
+    weight = column_kl_divergence(
+        count_indices,
+        count_data,
+        marginal,
+        prior_strength,
+        marginal_entropy,
+    )
+    if target is not None:
+        target_indices, target_data = target_counts(
+            count_indices,
+            count_data,
+            target,
+        )
+        supervised_weight = column_kl_divergence(
+            target_indices,
+            target_data,
+            target_marginal,
+            prior_strength,
+            target_marginal_entropy,
+        )
+        weight = supervised_weight**supervision_weight * weight ** (
+            1 - supervision_weight
+        )
+    return weight
 
 
 @numba.njit(nogil=True, cache=True, parallel=True)
@@ -72,44 +132,51 @@ def column_weights(
     indptr,
     indices,
     data,
-    baseline_probabilities,
+    n_rows,
     prior_strength,
+    supervision_weight,
+    normalize=True,
     target=None,
     column_groups=None,
 ):
+    marginal, marginal_entropy, target_marginal, target_marginal_entropy = (
+        make_marginals(
+            indptr,
+            indices,
+            data,
+            n_rows,
+            normalize,
+            target,
+            column_groups,
+        )
+    )
+
     n_cols = indptr.shape[0] - 1
-    weights = np.ones(n_cols)
+    weights = np.empty(n_cols)
     for i in numba.prange(n_cols):
-        group = 0
-        if column_groups is not None:
-            group = column_groups[i]
         count_indices = indices[indptr[i] : indptr[i + 1]]
         count_data = data[indptr[i] : indptr[i + 1]]
-
-        # Make observed target distribution if necessary
-        if target is not None:
-            target_counts = np.zeros(baseline_probabilities.shape[1], dtype=data.dtype)
-            for index, count in zip(count_indices, count_data):
-                if target[index] >= 0:
-                    target_counts[target[index]] += count
-            count_indices = np.nonzero(target_counts)[0].astype(count_indices.dtype)
-            count_data = target_counts[count_indices]
-
-        weights[i] = column_kl_divergence(
+        group = column_groups[i] if column_groups is not None else 0
+        weights[i] = column_weight(
             count_indices,
             count_data,
-            baseline_probabilities[group, :],
-            prior_strength=prior_strength,
+            marginal[group],
+            prior_strength,
+            supervision_weight,
+            marginal_entropy=marginal_entropy[group],
             target=target,
+            target_marginal=target_marginal[group],
+            target_marginal_entropy=target_marginal_entropy[group],
         )
     return weights
 
 
-@numba.njit(nogil=True)
-def compute_baseline_probabilities(
+@numba.njit(nogil=True, cache=True)
+def compute_marginal(
     indptr,
     indices,
     data,
+    n_rows,
     target=None,
     column_groups=None,
 ):
@@ -119,54 +186,74 @@ def compute_baseline_probabilities(
     (n column groups) x (n targets) matrix (supervised) where each
     row is the marginal of the column group.
 
-    indptr, indices, and data arrays are from csr format.
+    indptr, indices, and data arrays are from csc format.
     """
-    n_groups = 1
-    if column_groups is not None:
-        n_groups = column_groups.max() + 1
-    n_targets = indptr.shape[0] - 1
-    if target is not None:
-        n_targets = target.max() + 1
-    counts = np.zeros((n_groups, n_targets), dtype=data.dtype)
-    for row in range(indptr.shape[0] - 1):
-        this_target = row
-        if target is not None:
-            if target[row] >= 0:
-                this_target = target[row]
-            else:
+    n_groups = 1 if column_groups is None else np.max(column_groups) + 1
+    n_targets = n_rows if target is None else np.max(target) + 1
+    marginal = np.zeros((n_groups, n_targets), dtype=np.float64)
+    for col in range(indptr.shape[0] - 1):
+        group = 0 if column_groups is None else column_groups[col]
+        for i in range(indptr[col], indptr[col + 1]):
+            row = indices[i]
+            this_target = target[row] if target is not None else row
+            if this_target < 0:
                 continue
-        for i in range(indptr[row], indptr[row + 1]):
-            group = 0
-            if column_groups is not None:
-                group = column_groups[indices[i]]
-            counts[group, this_target] += data[i]
-    probabilities = counts / np.sum(counts, axis=1).reshape(-1, 1)
-    return probabilities
-
-
-@numba.njit(nogil=True, parallel=True)
-def compute_baseline_entropies(baseline_probabilities):
-    group_entropies = np.empty(baseline_probabilities.shape[0], dtype="float64")
-    for i in numba.prange(baseline_probabilities.shape[0]):
-        marginal = baseline_probabilities[i, :]
-        marginal = marginal[marginal > 0]
-        group_entropies[i] = -np.sum(marginal * np.log2(marginal))
-    return group_entropies
+            marginal[group, this_target] += data[i]
+    marginal /= np.sum(marginal, axis=1).reshape(-1, 1)
+    return marginal
 
 
 @numba.njit(nogil=True)
-def normalize_by_baseline_entropy(
-    weights,
-    baseline_probabilities,
+def compute_marginal_entropy(marginal):
+    group_entropy = np.empty(marginal.shape[0], dtype=marginal.dtype)
+    for i in range(marginal.shape[0]):
+        m = marginal[i, :]
+        m = m[m > 0]  # 0s cause -inf in log, but are multiplied by 0
+        group_entropy[i] = -np.sum(marginal * np.log2(marginal))
+    return group_entropy
+
+
+@numba.njit(nogil=True, cache=True)
+def make_marginals(
+    indptr,
+    indices,
+    data,
+    n_rows,
+    normalize=True,
+    target=None,
     column_groups=None,
 ):
-    baseline_entropies = compute_baseline_entropies(baseline_probabilities)
-    if column_groups is None:
-        weights /= baseline_entropies[0]
-    else:
-        for i in numba.prange(weights.shape[0]):
-            weights[i] /= baseline_entropies[column_groups[i]]
-    return weights
+    marginal = compute_marginal(
+        indptr,
+        indices,
+        data,
+        n_rows,
+        target=None,
+        column_groups=column_groups,
+    )
+    marginal_entropy = (
+        compute_marginal_entropy(marginal)
+        if normalize
+        else np.full(marginal.shape[0], np.nan)
+    )
+    target_marginal = (
+        compute_marginal(
+            indptr,
+            indices,
+            data,
+            n_rows,
+            target=target,
+            column_groups=column_groups,
+        )
+        if target is not None
+        else np.empty((marginal.shape[0], 0))
+    )
+    target_marginal_entropy = (
+        compute_marginal_entropy(target_marginal)
+        if normalize and target is not None
+        else np.full(target_marginal.shape[0], np.nan)
+    )
+    return marginal, marginal_entropy, target_marginal, target_marginal_entropy
 
 
 @numba.njit
@@ -181,17 +268,264 @@ def expected_information_weight(
     for weight, group, prob in zip(weights, column_groups, column_marginal):
         eiw[group] += prob * weight
         group_total_probs[group] += prob
-    eiw /= group_total_probs
+    eiw[group_total_probs > 0] /= group_total_probs[group_total_probs > 0]
     return eiw
+
+
+@numba.njit(nogil=True)
+def sample_column(
+    count,
+    alias_array,
+    rng,
+):
+    counts = np.zeros(alias_array.shape[0], dtype=np.int64)
+    for _ in range(count):
+        idx = alias_sample(alias_array, rng)
+        counts[idx] += 1
+    count_indices = np.nonzero(counts)[0]
+    count_data = counts[count_indices]
+    return count_indices, count_data
+
+
+@numba.njit(cache=True)
+def alias_sampling_setup(probs):
+    """
+    Set up arrays for Walker's Alias Method.
+    """
+    n = len(probs)
+    # Store q and alias together for better caching later
+    result = np.empty((n, 2))
+    result[:, 0] = probs * n
+    q = result[:, 0]
+    alias = result[:, 1]
+
+    # Pre-allocate array stacks
+    smaller = np.zeros(n, dtype=np.int32)
+    larger = np.zeros(n, dtype=np.int32)
+    next_small_idx = 0
+    next_large_idx = 0
+
+    # Categorize indices into smaller or larger than 1.0
+    for i in range(n):
+        if q[i] < 1.0:
+            smaller[next_small_idx] = i
+            next_small_idx += 1
+        else:
+            larger[next_large_idx] = i
+            next_large_idx += 1
+
+    # Pair small outcomes with large outcomes
+    while next_small_idx > 0 and next_large_idx > 0:
+        next_small_idx -= 1
+        small = smaller[next_small_idx]
+        next_large_idx -= 1
+        large = larger[next_large_idx]
+
+        alias[small] = large
+        q[large] = (q[large] + q[small]) - 1.0
+
+        if q[large] < 1.0:
+            smaller[next_small_idx] = large
+            next_small_idx += 1
+        else:
+            larger[next_large_idx] = large
+            next_large_idx += 1
+
+    return result
+
+
+@numba.njit(nogil=True, inline="always")
+def alias_sample(alias_array, rng):
+    # alias_array contain q and alias vstacked
+    # 1. Uniformly pick a column index
+    u = rng.random()
+    idx = int(u * alias_array.shape[0])
+
+    # 2. Split selection based on the scaled probability threshold
+    coin = rng.random()
+    if coin >= alias_array[idx, 0]:
+        idx = int(alias_array[idx, 1])
+    return idx
+
+
+@numba.njit
+def sample_cdf(
+    n_samples,
+    rngs,
+    indptr,
+    indices,
+    data,
+    n_rows,
+    prior_strength=1e-4,
+    supervision_weight=0.95,
+    normalize=True,
+    target=None,
+    column_groups=None,
+    uniform=False,
+):
+    # Uniform marginal does not require column groups
+    # Must happen out here to make prange happy
+    n_cols = len(indptr) - 1
+    if uniform or column_groups is None:
+        column_groups = np.zeros(n_cols, dtype=np.int64)
+    if not uniform:
+        marginal, marginal_entropy, target_marginal, target_marginal_entropy = (
+            make_marginals(
+                indptr,
+                indices,
+                data,
+                n_rows,
+                normalize,
+                target,
+                column_groups,
+            )
+        )
+    else:
+        uniform_indices = np.arange(n_rows, dtype=indices.dtype)
+        uniform_indptr = np.array([0, n_rows])
+        uniform_data = np.ones(n_rows, dtype=data.dtype)
+        marginal, marginal_entropy, target_marginal, target_marginal_entropy = (
+            make_marginals(
+                uniform_indptr,
+                uniform_indices,
+                uniform_data,
+                n_rows,
+                normalize,
+                target,
+            )
+        )
+
+    alias_arrays = np.empty((marginal.shape[0], marginal.shape[1], 2))
+    for group in range(marginal.shape[0]):
+        alias_arrays[group, :, :] = alias_sampling_setup(marginal[group])
+
+    cdf = np.zeros(n_cols, dtype=np.float64)
+    for col in numba.prange(n_cols):
+        group = column_groups[col]
+        alias_array = alias_arrays[group, :, :]
+        count = np.sum(data[indptr[col] : indptr[col + 1]])
+        rng = rngs[col]
+        iw = column_weight(
+            indices[indptr[col] : indptr[col + 1]],
+            data[indptr[col] : indptr[col + 1]],
+            marginal[group],
+            prior_strength,
+            supervision_weight,
+            marginal_entropy[group],
+            target,
+            target_marginal[group],
+            target_marginal_entropy[group],
+        )
+        for _ in range(n_samples):
+            sample_indices, sample_data = sample_column(
+                count,
+                alias_array,
+                rng,
+            )
+            sample_weight = column_weight(
+                sample_indices,
+                sample_data,
+                marginal[group],
+                prior_strength,
+                supervision_weight,
+                marginal_entropy[group],
+                target,
+                target_marginal[group],
+                target_marginal_entropy[group],
+            )
+            if sample_weight < iw:
+                cdf[col] += 1
+    cdf /= n_samples
+    return cdf
+
+
+def is_stopword(
+    p,
+    n_samples,
+    data,
+    prior_strength=1e-4,
+    supervision_weight=0.95,
+    normalize=True,
+    target=None,
+    column_groups=None,
+    method="measured",
+    rng=None,
+):
+    """Determine which columns (if any) are stopwords. A stopword is
+    a column that, with probability p, has less information than if it
+    were randomly sampled according to the marginal distribution.
+
+    Parameters
+    ----------
+    p: float
+    n_samples: int
+    data: sp.sparse_array | sp.sparse_matrix
+    prior_strength: float
+    supervision_weight: float
+    normalize: bool
+    target: NDArray[int] | None
+    column_groups: NDArray[int] | None
+    method="measured"
+    rng: np.random.Generator | None
+    """
+    if method not in ["measured", "uniform", "either"]:
+        raise ValueError("method must be one of 'measured', 'uniform', or 'either'.")
+
+    if rng is None:
+        rng = np.random.default_rng()
+    # Spawn independent generators for each column so we can process in parallel
+    rngs = rng.spawn(data.shape[1])
+
+    csc_data = data.tocsc()
+
+    if method == "measured" or method == "either":
+        measured_cdf = sample_cdf(
+            n_samples,
+            rngs,
+            csc_data.indptr,
+            csc_data.indices,
+            csc_data.data,
+            csc_data.shape[0],
+            prior_strength,
+            supervision_weight,
+            normalize,
+            target,
+            column_groups,
+            False,
+        )
+        measured_stopwords = measured_cdf < (1 - p)
+        if method == "measured":
+            return measured_stopwords
+
+    if method == "uniform" or method == "either":
+        uniform_cdf = sample_cdf(
+            n_samples,
+            rngs,
+            csc_data.indptr,
+            csc_data.indices,
+            csc_data.data,
+            csc_data.shape[0],
+            prior_strength,
+            supervision_weight,
+            normalize,
+            target,
+            column_groups,
+            True,
+        )
+        uniform_stopwords = uniform_cdf < (1 - p)
+        if method == "uniform":
+            return uniform_stopwords
+
+    return measured_stopwords + uniform_stopwords
 
 
 def information_weight(
     data,
     prior_strength=1e-4,
+    supervision_weight=0.95,
+    normalize=True,
     target=None,
     column_groups=None,
-    normalize=True,
-    reweight_groups=True,
 ):
     """Compute information based weights for columns. The information weight
     is estimated as the amount of information gained by moving from a baseline
@@ -213,6 +547,15 @@ def information_weight(
         How strongly to weight the prior when doing a Bayesian update to
         derive a model based on observed counts of a column.
 
+    supervision_weight: float (optional, default=0.95)
+        Parameter for combining supervised and unsupervised weights when
+        targets are passed. Final weight is supervised_weight**supervision_weight
+        * unsupervised_weight**(1-supervision weight). Must be in (0, 1].
+
+    normalize: bool (optional, default=True)
+        Normalize the information weight by dividing by the entropy of the marginal distribution.
+        This normalizes the 'scale' so weights from different distributions can be combined.
+
     target: ndarray or None (optional, default=None)
         If supervised target labels are available, these can be used to define distributions
         over the target classes rather than over rows, allowing weights to be
@@ -222,14 +565,6 @@ def information_weight(
         If columns have a natural grouping, i.e. cols 10-15 are a one-hot-encoding of a single
         categorical variable, we should compare the column distribution to the within group
         marginal. If passed None then all columns have the same group.
-
-    normalize: bool (optional, default=True)
-        Normalize the information weight by dividing by the entropy of the marginal distribution.
-        This normalizes the 'scale' so weights from different distributions can be combined.
-
-    reweight_groups: bool (optional, default=True)
-        Reweight the column_groups by multiplying each information weight by the expected
-        weight of the column group. This will up-weight informative column groups.
 
     Returns
     -------
@@ -245,44 +580,22 @@ def information_weight(
         raise ValueError(
             "The number of columns must match the length of column groups."
         )
-
-    csr_data = data.tocsr()
-    baseline_probabilities = compute_baseline_probabilities(
-        csr_data.indptr,
-        csr_data.indices,
-        csr_data.data,
-        target,
-        column_groups,
-    )
+    if supervision_weight < 0 or supervision_weight > 1:
+        raise ValueError("supervision_weight must be at least 0 and at most 1.")
 
     csc_data = data.tocsc()
-    csc_data.sort_indices()
+
     weights = column_weights(
         csc_data.indptr,
         csc_data.indices,
         csc_data.data,
-        baseline_probabilities,
-        prior_strength=prior_strength,
-        target=target,
-        column_groups=column_groups,
+        csc_data.shape[0],
+        prior_strength,
+        supervision_weight,
+        normalize,
+        target,
+        column_groups,
     )
-
-    if normalize:
-        normalize_by_baseline_entropy(
-            weights,
-            baseline_probabilities,
-            column_groups=column_groups,
-        )
-
-    if reweight_groups and column_groups is not None:
-        column_marginal = np.asarray(csc_data.sum(axis=0)).reshape(-1).astype("float64")
-        column_marginal /= np.sum(column_marginal)
-        eiw = expected_information_weight(
-            weights,
-            column_groups,
-            column_marginal,
-        )
-        weights *= eiw[column_groups]
 
     return weights
 
@@ -323,12 +636,45 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         marginal distribution like is done in supervised mode (when
         supervision weight < 1).
 
+    reweight_group: bool (optional, default=True)
+        Flag to reweight each group by the expected information weight
+        according to the column marginal. If p<1 and stopwords are
+        removed, expected information is computed after dropping
+        stopwords.
+
+    p: float (optional, default=1)
+        CDF threshold below which a column is a stopword. Setting p=1
+        results in no stopwords and the computation is skipped. Sampling
+        the CDF is much slower than computing the information weight so
+        setting p<1 will increase the runtime.
+
+    n_samples: int (optional, default=100)
+        Number of samples used in the CDF computation.
+
+    method: str (optional, default="measured")
+        Method to determine if a word is a stopword. method='measured' uses
+        samples random column distributions according to the observed marginal.
+        Setting method='uniform' samples from a uniform marginal, and uses the
+        uniform marginal to compute the information weight. Setting
+        method='either' give stopwords that satisfy either of the other
+        methods.
+
+    rng: np.random.Generator | None (optional, default=None)
+
     Attributes
     ----------
 
     information_weights_: ndarray of shape (n_features,)
         The learned weights to be applied to columns based on the amount
         of information provided by the column.
+
+    stopword_: ndarray of shape (n_features,)
+        Boolean array that notes if each column is a stopword. If p=1,
+        no columns can be stopwords, so stopword_ is set to None.
+
+    group_weights_: ndarray of shape (n_groups,)
+        Array holding the expected information of each column group. Only
+        set if reweight_groups=True and column_groups is not None.
     """
 
     def __init__(
@@ -338,12 +684,20 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         supervision_weight=0.95,
         normalize=True,
         reweight_groups=True,
+        p=1,
+        n_samples=100,
+        method="measured",
+        rng=None,
     ):
         self.prior_strength = prior_strength
         self.weight_power = weight_power
         self.supervision_weight = supervision_weight
         self.normalize = normalize
         self.reweight_groups = reweight_groups
+        self.p = p
+        self.n_samples = n_samples
+        self.method = method
+        self.rng = rng
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()
@@ -420,37 +774,51 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         """
         X, y = self._validate_data(X, y, reset=True)
         if not scipy.sparse.isspmatrix(X):
-            X = scipy.sparse.csr_matrix(X)
+            X = scipy.sparse.csc_matrix(X)
+
+        y_ = None
+        if y is not None and self.supervision_weight > 0:
+            y_ = self._format_y(y)
 
         self.information_weights_ = information_weight(
             X,
             self.prior_strength,
+            target=y_,
+            supervision_weight=self.supervision_weight,
             column_groups=column_groups,
             normalize=self.normalize,
-            reweight_groups=self.reweight_groups,
         )
 
-        if y is not None and self.supervision_weight > 0:
-            y_ = self._format_y(y)
-
-            supervised_weights = information_weight(
+        self.stopword_ = None
+        if self.p < 1:
+            self.stopword_ = is_stopword(
+                self.p,
+                self.n_samples,
                 X,
                 self.prior_strength,
-                target=y_,
-                column_groups=column_groups,
-                normalize=self.normalize,
-                reweight_groups=self.reweight_groups,
+                self.supervision_weight,
+                self.normalize,
+                y_,
+                column_groups,
+                self.method,
+                self.rng,
             )
 
-            np.power(
-                supervised_weights, self.supervision_weight, out=supervised_weights
-            )
-            np.power(
+        if (
+            self.reweight_groups
+            and column_groups is not None
+            and not np.all(self.stopword_)
+        ):
+            column_marginal = np.asarray(X.sum(axis=0)).reshape(-1).astype("float64")
+            if self.stopword_ is not None:
+                column_marginal[self.stopword_] = 0
+            column_marginal /= np.sum(column_marginal)
+            self.group_weights_ = expected_information_weight(
                 self.information_weights_,
-                1 - self.supervision_weight,
-                out=self.information_weights_,
+                column_groups,
+                column_marginal,
             )
-            self.information_weights_ = supervised_weights * self.information_weights_
+            self.information_weights_ *= self.group_weights_[column_groups]
 
         self.information_weights_ = np.power(
             self.information_weights_, self.weight_power
@@ -465,6 +833,9 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
             result = X * self.information_weights_
         elif scipy.sparse.issparse(X):
             result = X.multiply(self.information_weights_.reshape(1, -1))
+            result = result.tocsc()
         else:
             raise ValueError("X should be a numpy array or scipy sparse array.")
+        if self.stopword_ is not None:
+            result = result[:, ~self.stopword_]
         return result

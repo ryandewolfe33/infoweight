@@ -209,7 +209,7 @@ def compute_marginal_entropy(marginal):
     for i in range(marginal.shape[0]):
         m = marginal[i, :]
         m = m[m > 0]  # 0s cause -inf in log, but are multiplied by 0
-        group_entropy[i] = -np.sum(marginal * np.log2(marginal))
+        group_entropy[i] = -np.sum(m * np.log2(m))
     return group_entropy
 
 

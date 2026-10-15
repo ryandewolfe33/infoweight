@@ -350,6 +350,7 @@ def alias_sample(alias_array, rng):
 
 @numba.njit
 def sample_cdf(
+    offset,
     n_samples,
     rngs,
     indptr,
@@ -433,7 +434,7 @@ def sample_cdf(
                 target_marginal[group],
                 target_marginal_entropy[group],
             )
-            if sample_weight < iw:
+            if sample_weight < iw - offset:
                 cdf[col] += 1
     cdf /= n_samples
     return cdf
@@ -441,6 +442,7 @@ def sample_cdf(
 
 def is_stopword(
     p,
+    offset,
     n_samples,
     data,
     prior_strength=1e-4,
@@ -458,6 +460,7 @@ def is_stopword(
     Parameters
     ----------
     p: float
+    offset: float
     n_samples: int
     data: sp.sparse_array | sp.sparse_matrix
     prior_strength: float
@@ -480,6 +483,7 @@ def is_stopword(
 
     if method == "measured" or method == "either":
         measured_cdf = sample_cdf(
+            offset,
             n_samples,
             rngs,
             csc_data.indptr,
@@ -499,6 +503,7 @@ def is_stopword(
 
     if method == "uniform" or method == "either":
         uniform_cdf = sample_cdf(
+            offset,
             n_samples,
             rngs,
             csc_data.indptr,
@@ -648,6 +653,9 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         the CDF is much slower than computing the information weight so
         setting p<1 will increase the runtime.
 
+    offset: float (optional, default=0.01)
+        Offset to subtract from the information weight when computing the cdf.
+
     n_samples: int (optional, default=100)
         Number of samples used in the CDF computation.
 
@@ -685,6 +693,7 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         normalize=True,
         reweight_groups=True,
         p=1,
+        offset=0.01,
         n_samples=100,
         method="measured",
         rng=None,
@@ -695,6 +704,7 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         self.normalize = normalize
         self.reweight_groups = reweight_groups
         self.p = p
+        self.offset = offset
         self.n_samples = n_samples
         self.method = method
         self.rng = rng
@@ -793,6 +803,7 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         if self.p < 1:
             self.stopword_ = is_stopword(
                 self.p,
+                self.offset,
                 self.n_samples,
                 X,
                 self.prior_strength,

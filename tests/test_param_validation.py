@@ -41,6 +41,7 @@ def test_incorrect_stopwords_method():
     with pytest.raises(ValueError):
         is_stopword(
             0.5,
+            0.01,
             10,
             test_matrix,
             method="bad method",

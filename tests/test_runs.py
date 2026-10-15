@@ -25,16 +25,26 @@ def test_iw_transformer_sklearn_check_estimator():
 @pytest.mark.parametrize("normalize", [True, False])
 @pytest.mark.parametrize("reweight_groups", [True, False])
 @pytest.mark.parametrize("p", [1.0, 0.5])
+@pytest.mark.parametrize("offset", [0.01, 0.0])
 @pytest.mark.parametrize("method", ["measured", "uniform", "either"])
 @pytest.mark.parametrize("data", [test_matrix, test_array])
 def test_iw_transformer_fit_args(
-    prior_strength, target, column_groups, normalize, reweight_groups, p, method, data
+    prior_strength,
+    target,
+    column_groups,
+    normalize,
+    reweight_groups,
+    p,
+    offset,
+    method,
+    data,
 ):
     IWT = InformationWeightTransformer(
         prior_strength=prior_strength,
         normalize=normalize,
         reweight_groups=reweight_groups,
         p=p,
+        offset=offset,
         method=method,
     )
     result = IWT.fit_transform(data, target, column_groups=column_groups)
@@ -51,15 +61,17 @@ def test_iw_transformer_fit_args(
 @pytest.mark.parametrize("normalize", [True, False])
 @pytest.mark.parametrize("reweight_groups", [True, False])
 @pytest.mark.parametrize("p", [1.0, 0.5])
+@pytest.mark.parametrize("offset", [0.01, 0.0])
 @pytest.mark.parametrize("method", ["measured", "uniform", "either"])
 def test_iw_transformer_zero_column(
-    prior_strength, target, column_groups, normalize, reweight_groups, p, method
+    prior_strength, target, column_groups, normalize, reweight_groups, p, offset, method
 ):
     IWT = InformationWeightTransformer(
         prior_strength=prior_strength,
         normalize=normalize,
         reweight_groups=reweight_groups,
         p=p,
+        offset=offset,
         method=method,
     )
     result = IWT.fit_transform(
@@ -76,15 +88,17 @@ def test_iw_transformer_zero_column(
 @pytest.mark.parametrize("normalize", [True, False])
 @pytest.mark.parametrize("reweight_groups", [True, False])
 @pytest.mark.parametrize("p", [1.0, 0.5])
+@pytest.mark.parametrize("offset", [0.01, 0.0])
 @pytest.mark.parametrize("method", ["measured", "uniform", "either"])
 def test_iw_transformer_zero_row(
-    prior_strength, target, column_groups, normalize, reweight_groups, p, method
+    prior_strength, target, column_groups, normalize, reweight_groups, p, offset, method
 ):
     IWT = InformationWeightTransformer(
         prior_strength=prior_strength,
         normalize=normalize,
         reweight_groups=reweight_groups,
         p=p,
+        offset=offset,
         method=method,
     )
     result = IWT.fit_transform(

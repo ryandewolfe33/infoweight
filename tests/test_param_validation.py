@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import scipy.sparse
 
-from infoweight.infoweight import information_weight, is_stopword
+from infoweight.infoweight_ import information_weight, is_stopword
 
 test_matrix = scipy.sparse.csr_matrix(
     [[1, 2, 0, 0, 1], [0, 1, 0, 1, 0], [2, 0, 3, 1, 1], [1, 1, 1, 1, 3]]

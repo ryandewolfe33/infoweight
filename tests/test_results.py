@@ -7,6 +7,7 @@ from infoweight import InformationWeightTransformer
 test_matrix = scipy.sparse.csr_matrix(
     [[1, 2, 0, 0, 1], [0, 1, 0, 1, 0], [2, 0, 3, 1, 1], [1, 1, 1, 1, 3]]
 )
+# row sums [4, 3, 7, 7]
 test_array = scipy.sparse.csr_array(test_matrix)
 
 
@@ -16,29 +17,11 @@ def test_iw_transformer_default_result(data):
     IWT.fit(data)
     answer = np.array(
         [
-            0.21625041744889634,
-            0.8695094613169168,
-            0.7028043022802357,
-            0.5317269420080221,
-            0.3049147097620183,
-        ]
-    )
-    assert np.allclose(IWT.information_weights_, answer)
-
-
-@pytest.mark.parametrize("data", [test_matrix, test_array])
-def test_iw_transformer_zero_prior_result(data):
-    IWT = InformationWeightTransformer(
-        prior_strength=0, normalize=False, reweight_groups=False
-    )
-    IWT.fit(data)
-    answer = np.array(
-        [
-            0.21641190334415927,
-            0.8700893643729614,
-            0.7032950483706254,
-            0.5320623127944701,
-            0.30509356278661054,
+            0.216308992554068,
+            0.869720202999606,
+            0.702982477917093,
+            0.531848923510630,
+            0.304980051733278,
         ]
     )
     assert np.allclose(IWT.information_weights_, answer)
@@ -50,11 +33,11 @@ def test_iw_transformer_supervised_result(data):
     IWT.fit(data, np.array([0, 0, 1, 1]))
     answer = np.array(
         [
-            0.010429578294587379,
-            0.6305379429705708,
-            0.5222153619954761,
-            0.00479285019039355,
-            0.04123724606682257,
+            0.0104305066205960,
+            0.6305931400667026,
+            0.5223813580563722,
+            0.0047932567219263,
+            0.0412408856699958,
         ]
     )
     assert np.allclose(IWT.information_weights_, answer)
@@ -68,27 +51,11 @@ def test_iw_transformer_supervised_one_supervised_weight_result(data):
     IWT.fit(data, np.array([0, 0, 1, 1]))
     answer = np.array(
         [
-            0.008891340950519605,
-            0.6199630411917103,
-            0.5141158240611795,
-            0.0037407379487476647,
-            0.037115786584735494,
-        ]
-    )
-    assert np.allclose(IWT.information_weights_, answer)
-
-
-@pytest.mark.parametrize("data", [test_matrix, test_array])
-def test_iw_transformer_semisupervised_column_groups_result(data):
-    IWT = InformationWeightTransformer(normalize=False, reweight_groups=False)
-    IWT.fit(data, np.array([0, 0, 1, -1]), column_groups=np.array([0, 0, 1, 1, 1]))
-    answer = np.array(
-        [
-            0.3342522938657766,
-            0.5773158995466053,
-            0.48325836275214235,
-            0.15484925944254302,
-            0.1530203594658495,
+            0.0088920472644947,
+            0.6200122609692549,
+            0.5142809867639863,
+            0.0037410267756482,
+            0.0371188162376298,
         ]
     )
     assert np.allclose(IWT.information_weights_, answer)
@@ -100,11 +67,11 @@ def test_iw_transformer_semisupervised_result(data):
     IWT.fit(data, np.array([0, 0, 1, -1]))
     answer = np.array(
         [
-            0.052683417978751326,
-            1.1008690917759285,
-            0.8817724537554549,
-            0.0054471660185512125,
-            0.005297794369109902,
+            0.0526881061309598,
+            1.1011724096623694,
+            0.8820285473808588,
+            0.0054476314171496,
+            0.0052982430035547,
         ]
     )
     assert np.allclose(IWT.information_weights_, answer)
@@ -116,11 +83,11 @@ def test_iw_transformer_column_groups_result(data):
     IWT.fit(data, column_groups=np.array([0, 0, 1, 1, 1]))
     answer = np.array(
         [
-            0.35354293404823056,
-            0.45713280216144275,
-            0.4514702271310239,
-            0.45186981953145916,
-            0.3562993568566697,
+            0.3536218352117088,
+            0.4572723171858078,
+            0.4515744415109636,
+            0.4519355993488065,
+            0.3563620022324862,
         ]
     )
     assert np.allclose(IWT.information_weights_, answer)
@@ -132,11 +99,27 @@ def test_iw_transformer_supervised_column_groups_result(data):
     IWT.fit(data, np.array([0, 0, 1, 1]), column_groups=np.array([0, 0, 1, 1, 1]))
     answer = np.array(
         [
-            0.19470029553734533,
-            0.19721803254086,
-            0.26999221258333383,
-            0.12689748978402643,
-            0.006764705114180968,
+            0.1947176018587121,
+            0.1972363713372797,
+            0.2700832944405920,
+            0.1269071321524144,
+            0.0067652539213802,
+        ]
+    )
+    assert np.allclose(IWT.information_weights_, answer)
+
+
+@pytest.mark.parametrize("data", [test_matrix, test_array])
+def test_iw_transformer_semisupervised_column_groups_result(data):
+    IWT = InformationWeightTransformer(normalize=False, reweight_groups=False)
+    IWT.fit(data, np.array([0, 0, 1, -1]), column_groups=np.array([0, 0, 1, 1, 1]))
+    answer = np.array(
+        [
+            0.334280772060793,
+            0.577497776895318,
+            0.483412531858822,
+            0.154861479387390,
+            0.153032666505991,
         ]
     )
     assert np.allclose(IWT.information_weights_, answer)

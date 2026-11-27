@@ -1,4 +1,2 @@
-from .infoweight import (
-    InformationWeightTransformer,
-    information_weight,
-)
+from .information_weight_transformer import InformationWeightTransformer
+from .infoweight_ import information_weight

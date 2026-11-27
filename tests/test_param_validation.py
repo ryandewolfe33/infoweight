@@ -2,18 +2,12 @@ import numpy as np
 import pytest
 import scipy.sparse
 
-from infoweight.infoweight import information_weight, is_stopword
+from infoweight import information_weight
+from infoweight.stopwords import is_stopword
 
 test_matrix = scipy.sparse.csr_matrix(
     [[1, 2, 0, 0, 1], [0, 1, 0, 1, 0], [2, 0, 3, 1, 1], [1, 1, 1, 1, 3]]
 )
-
-
-def test_incorrect_prior_strength():
-    with pytest.raises(ValueError):
-        information_weight(test_matrix, prior_strength=-1)
-    with pytest.raises(ValueError):
-        information_weight(test_matrix, prior_strength=1)
 
 
 def test_incorrect_target():
@@ -32,9 +26,9 @@ def test_incorrect_column_groups():
 
 def test_incorrect_supervision_weight():
     with pytest.raises(ValueError):
-        information_weight(test_matrix, prior_strength=-1)
+        information_weight(test_matrix, supervision_weight=-1)
     with pytest.raises(ValueError):
-        information_weight(test_matrix, prior_strength=2)
+        information_weight(test_matrix, supervision_weight=2)
 
 
 def test_incorrect_stopwords_method():

@@ -34,8 +34,7 @@ def row_group_by(
     data: sp.sparray,
     target: NDArray,
 ) -> sp.sparray:
-    """Sum the rows of the matrix that share a target id.
-    """
+    """Sum the rows of the matrix that share a target id."""
     assert data.shape[0] == target.shape[0], (
         "Number of rows in data must match the length of the target array."
     )

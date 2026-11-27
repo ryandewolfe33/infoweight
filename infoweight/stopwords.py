@@ -4,9 +4,9 @@ import scipy.sparse as sp
 from numba.typed import List
 from numpy.typing import NDArray
 
+from .distribution_helpers import compute_marginal, row_group_by
 from .information_theory import entropy, kl_divergence
 from .infoweight_ import combine_unsupervised_and_supervised_weight, information_weight
-from .distribution_helpers import compute_marginal, row_group_by
 
 
 @numba.njit(nogil=True, cache=True)

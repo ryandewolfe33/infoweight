@@ -25,7 +25,7 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
 
     Parameters
     ----------
-    dtype: np.float32 | np.float64 | None (optional, default=None)
+    dtype: np.float32 | np.float64 | str | None (optional, default=None)
         Precision to compute and return the weights. Setting to None
         will automatically select the precision equal to the input data
         (e.g. if X is np.float32 or np.int32 then dtype=np.float32)
@@ -216,7 +216,7 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
 
         # Set or infer dtype
         if self.dtype is not None:
-            dtype = self.dtype
+            dtype = np.dtype(self.dtype).type
         elif isinstance(X.data, np.float32 | np.int32):
             dtype = np.float32
         else:

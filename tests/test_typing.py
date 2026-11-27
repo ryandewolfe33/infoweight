@@ -36,8 +36,6 @@ test_matrix = sp.csr_array(
 @pytest.mark.parametrize("target", [None, np.array([0, 0, 1, 1])])
 @pytest.mark.parametrize("column_groups", [None, np.array([0, 0, 1, 1, 1])])
 def test_transformer(input_type, output_type, target, column_groups):
-    print(input_type, output_type)
-
     input = test_matrix.astype(input_type)
     IWT = infoweight.InformationWeightTransformer(dtype=output_type)
 

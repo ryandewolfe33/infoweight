@@ -192,11 +192,12 @@ def information_weight(
     if supervision_weight < 0 or supervision_weight > 1:
         raise ValueError("supervision_weight must be at least 0 and at most 1.")
     # Set or infer dtype
-    if dtype is None:
-        if isinstance(data.data, np.float32 | np.int32):
-            dtype = np.float32
-        else:
-            dtype = np.float64
+    if dtype is not None:
+        dtype = np.dtype(dtype).type
+    elif isinstance(data.data, np.float32 | np.int32):
+        dtype = np.float32
+    else:
+        dtype = np.float64
     # Column groups is None == all one column group
     if column_groups is None:
         column_groups = np.broadcast_to(0, data.shape[1])

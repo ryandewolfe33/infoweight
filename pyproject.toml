@@ -1,5 +1,5 @@
 [build-system]
-requires = ["uv_build>=0.12.20,<0.13"]
+requires = ["uv_build>=0.13.0,<0.14"]
 build-backend = "uv_build"
 
 [project]
@@ -54,6 +54,7 @@ docs = [
 [project.urls]
 Homepage = "https://github.com/ryandewolfe33/infoweight"
 Repository = "https://github.com/ryandewolfe33/infoweight"
+Documentation = "https://infoweight.readthedocs.io"
 
 [tool.uv.build-backend]
 module-name = "infoweight"

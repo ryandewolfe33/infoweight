@@ -3,7 +3,7 @@ import numpy as np
 import scipy.sparse as sp
 from numpy.typing import NDArray
 
-from .information_theory import compute_entropy, kl_divergence
+from .information_theory import entropy, kl_divergence
 from .marginal import compute_marginal, sum_row_groups
 
 
@@ -56,7 +56,7 @@ def column_weights(
         column_groups,
         dtype,
     )
-    marginal_entropies = compute_entropy(marginals)
+    marginal_entropies = entropy(marginals)
     weights = np.empty(shape[1], dtype=dtype)
     for col in numba.prange(shape[1]):
         col_indices = indices[indptr[col] : indptr[col + 1]]

@@ -78,9 +78,9 @@ def kl_divergence(
 
 
 @numba.njit(nogil=True)
-def compute_entropy(
+def entropy(
     marginals: NDArray[np.floating],
-) -> NDArray[np.floating]:  # TODO move to weight file
+) -> NDArray[np.floating]:
     """Compute the entropy of each row in marginal. Assumed each row sums to 1."""
     assert len(marginals.shape) == 2, (
         "marginals must be a 2d array where each row is a distribution."

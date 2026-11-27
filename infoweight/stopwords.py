@@ -4,7 +4,7 @@ import scipy.sparse as sp
 from numba.typed import List
 from numpy.typing import NDArray
 
-from .information_theory import compute_entropy, kl_divergence
+from .information_theory import entropy, kl_divergence
 from .infoweight_ import combine_unsupervised_and_supervised_weight, information_weight
 from .marginal import compute_marginal, sum_row_groups
 
@@ -353,7 +353,7 @@ def is_stopword(
         )
         marginals_entropies = np.full(marginals.shape[0], np.nan)
         if normalize:
-            marginals_entropies = compute_entropy(marginals)
+            marginals_entropies = entropy(marginals)
 
         target_marginals = None
         target_marginals_entropies = None
@@ -369,7 +369,7 @@ def is_stopword(
             )
             target_marginals_entropies = np.full(target_marginals.shape[0], np.nan)
             if normalize:
-                target_marginals_entropies = compute_entropy(target_marginals)
+                target_marginals_entropies = entropy(target_marginals)
 
         # Set up fast sampling of row ids with probabilities proportional to marginal
         qs, aliases = alias_sampling_setup(marginals)
@@ -398,9 +398,9 @@ def is_stopword(
         # Column groups not needed for uniform null hypotheses
         dummy_column_groups = np.broadcast_to(0, data.shape[1])
         marginals = np.broadcast_to(dtype(1 / data.shape[0]), (1, data.shape[0]))
-        marginals_entropies = compute_entropy(marginals)
+        marginals_entropies = entropy(marginals)
         if normalize:
-            marginals_entropies = compute_entropy(marginals)
+            marginals_entropies = entropy(marginals)
 
         target_marginals = None
         target_marginals_entropies = None
@@ -418,7 +418,7 @@ def is_stopword(
             )
             target_marginals_entropies = np.full(target_marginals.shape[0], np.nan)
             if normalize:
-                target_marginals_entropies = compute_entropy(target_marginals)
+                target_marginals_entropies = entropy(target_marginals)
 
         # Set up fast sampling of row ids with probabilities proportional to marginal
         qs, aliases = alias_sampling_setup(marginals)

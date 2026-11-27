@@ -10,7 +10,15 @@ Infoweight
     :target: https://github.com/ryandewolfe33/infoweight/actions/workflows/ci.yaml
     :alt: Build Status
 
-|docs| |build|
+.. |pypi| image:: https://img.shields.io/pypi/v/infoweight
+    :target: https://pypi.org/project/infoweight/
+    :alt: PyPi version
+
+.. |license| image:: https://img.shields.io/github/license/ryandewolfe33/infoweight
+    :target: https://github.com/ryandewolfe33/infoweight/blob/main/LICENSE
+    :alt: License
+
+|docs| |build| |pypi| |license|
 
 
 This package provides the `InformationWeightTransformer`, an information theoretic generalization

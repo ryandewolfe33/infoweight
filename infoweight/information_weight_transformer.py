@@ -213,9 +213,17 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         # No column groups cast to all one group.
         if column_groups is None:
             column_groups = np.broadcast_to(0, X.shape[1])
-        dtype = np.float64
-        if self.dtype is None and isinstance(X.data, np.float32 | np.int32):
+
+        # Set or infer dtype
+        if self.dtype is not None:
+            dtype = self.dtype
+        elif isinstance(X.data, np.float32 | np.int32):
             dtype = np.float32
+        else:
+            dtype = np.float64
+
+        print("Passed", self.dtype)
+        print("Inferred", dtype)
 
         self.information_weights_ = information_weight(
             X,

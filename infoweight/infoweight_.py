@@ -3,8 +3,8 @@ import numpy as np
 import scipy.sparse as sp
 from numpy.typing import NDArray
 
-from .information_theory import entropy, kl_divergence
 from .distribution_helpers import compute_marginal, row_group_by
+from .information_theory import entropy, kl_divergence
 
 
 @numba.njit(nogil=True, cache=True, parallel=True)
@@ -75,8 +75,9 @@ def combine_unsupervised_and_supervised_weight(
     supervised_weight: NDArray[np.floating] | float,
     supervision_weight: float,
 ) -> NDArray[np.floating] | float:
+    # Return type will be the same as exponent
     return (
-        unsupervised_weight ** (1 - supervision_weight)
+        unsupervised_weight ** (type(supervision_weight)(1) - supervision_weight)
         * supervised_weight**supervision_weight
     )
 
@@ -190,10 +191,12 @@ def information_weight(
         )
     if supervision_weight < 0 or supervision_weight > 1:
         raise ValueError("supervision_weight must be at least 0 and at most 1.")
-    if dtype is None and isinstance(data.data, np.float32 | np.int32):
-        dtype = np.float32
-    else:
-        dtype = np.float64
+    # Set or infer dtype
+    if dtype is None:
+        if isinstance(data.data, np.float32 | np.int32):
+            dtype = np.float32
+        else:
+            dtype = np.float64
     # Column groups is None == all one column group
     if column_groups is None:
         column_groups = np.broadcast_to(0, data.shape[1])
@@ -210,6 +213,8 @@ def information_weight(
         dtype,
     )
 
+    print("Unsupervised weight", weights.dtype)
+
     if target is not None and supervision_weight > 0:
         target_matrix = row_group_by(data, target).tocsc()
         target_weights = column_weights(
@@ -221,9 +226,11 @@ def information_weight(
             column_groups,
             dtype,
         )
+        print("Supervised weight", target_weights.dtype)
         weights = combine_unsupervised_and_supervised_weight(
-            weights, target_weights, supervision_weight
+            weights, target_weights, dtype(supervision_weight)
         )
+        print("Combined weight", weights.dtype)
 
     if reweight_groups:
         group_weights = compute_group_weights(data, weights, column_groups)

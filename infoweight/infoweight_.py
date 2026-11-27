@@ -213,8 +213,6 @@ def information_weight(
         dtype,
     )
 
-    print("Unsupervised weight", weights.dtype)
-
     if target is not None and supervision_weight > 0:
         target_matrix = row_group_by(data, target).tocsc()
         target_weights = column_weights(
@@ -226,11 +224,9 @@ def information_weight(
             column_groups,
             dtype,
         )
-        print("Supervised weight", target_weights.dtype)
         weights = combine_unsupervised_and_supervised_weight(
             weights, target_weights, dtype(supervision_weight)
         )
-        print("Combined weight", weights.dtype)
 
     if reweight_groups:
         group_weights = compute_group_weights(data, weights, column_groups)

@@ -222,9 +222,6 @@ class InformationWeightTransformer(TransformerMixin, BaseEstimator):
         else:
             dtype = np.float64
 
-        print("Passed", self.dtype)
-        print("Inferred", dtype)
-
         self.information_weights_ = information_weight(
             X,
             supervision_weight=self.supervision_weight,

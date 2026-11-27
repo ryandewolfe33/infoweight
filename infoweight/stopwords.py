@@ -6,7 +6,7 @@ from numpy.typing import NDArray
 
 from .information_theory import entropy, kl_divergence
 from .infoweight_ import combine_unsupervised_and_supervised_weight, information_weight
-from .marginal import compute_marginal, sum_row_groups
+from .distribution_helpers import compute_marginal, row_group_by
 
 
 @numba.njit(nogil=True, cache=True)
@@ -358,7 +358,7 @@ def is_stopword(
         target_marginals = None
         target_marginals_entropies = None
         if target is not None:
-            target_matrix = sum_row_groups(data, target).tocsc()
+            target_matrix = row_group_by(data, target).tocsc()
             target_marginals = compute_marginal(
                 target_matrix.indptr,
                 target_matrix.indices,

@@ -4,7 +4,7 @@ import scipy.sparse as sp
 from numpy.typing import NDArray
 
 from .information_theory import entropy, kl_divergence
-from .marginal import compute_marginal, sum_row_groups
+from .distribution_helpers import compute_marginal, row_group_by
 
 
 @numba.njit(nogil=True, cache=True, parallel=True)
@@ -211,7 +211,7 @@ def information_weight(
     )
 
     if target is not None and supervision_weight > 0:
-        target_matrix = sum_row_groups(data, target).tocsc()
+        target_matrix = row_group_by(data, target).tocsc()
         target_weights = column_weights(
             target_matrix.indptr,
             target_matrix.indices,

@@ -16,7 +16,7 @@ def compute_marginal(
     """
     Compute the marginals to compare each column to. Returns
     an (n column groups) x (n samples) matrix, where each
-    row is the marginal of the column group.
+    row is the row-marginal of the column group.
 
     indptr, indices, and data arrays are from csc format.
     """
@@ -30,10 +30,12 @@ def compute_marginal(
     return (marginal / np.sum(marginal, axis=1).reshape(-1, 1)).astype(dtype)
 
 
-def sum_row_groups(
+def row_group_by(
     data: sp.sparray,
     target: NDArray,
 ) -> sp.sparray:
+    """Sum the rows of the matrix that share a target id.
+    """
     assert data.shape[0] == target.shape[0], (
         "Number of rows in data must match the length of the target array."
     )

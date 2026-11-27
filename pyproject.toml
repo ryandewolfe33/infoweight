@@ -54,6 +54,7 @@ docs = [
 [project.urls]
 Homepage = "https://github.com/ryandewolfe33/infoweight"
 Repository = "https://github.com/ryandewolfe33/infoweight"
+Documentation = "https://infoweight.readthedocs.io"
 
 [tool.uv.build-backend]
 module-name = "infoweight"

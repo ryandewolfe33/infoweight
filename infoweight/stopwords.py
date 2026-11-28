@@ -57,7 +57,7 @@ def alias_sampling_setup(marginals):
     return all_qs, all_aliases
 
 
-@numba.njit(nogil=True, inline="always")
+@numba.njit(nogil=True, inline="always", cache=True)
 def alias_sample(q, alias, rng):
     # alias_array contain q and alias vstacked
     # 1. Uniformly pick a column index
@@ -72,20 +72,16 @@ def alias_sample(q, alias, rng):
 
 
 @numba.njit(nogil=True, cache=True)
-def sample_column(
+def add_samples(
     count,
+    column,
     q,
     alias,
     rng,
 ):
-    n = len(q)
-    counts = np.zeros(n, dtype=np.int64)
     for _ in range(count):
         idx = alias_sample(q, alias, rng)
-        counts[idx] += 1
-    count_indices = np.nonzero(counts)[0]
-    count_data = counts[count_indices]
-    return count_indices, count_data
+        column[idx] += 1
 
 
 @numba.njit(nogil=True, cache=True)
@@ -133,20 +129,18 @@ def column_weight(
             supervised_weight /= target_marginal_entropy
 
         weight = combine_unsupervised_and_supervised_weight(
-            weight, supervision_weight, supervision_weight
+            weight, supervised_weight, supervision_weight
         )
     return weight
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(nogil=True, parallel=True)
 def sample_cdf(
     offset: float,
     n_samples: int,
     rngs: List[np.random.Generator],
     infoweights: NDArray[np.floating],
     column_counts: NDArray[np.integer],
-    qs: NDArray[np.floating],
-    aliases: NDArray[np.integer],
     marginals: NDArray[np.floating],
     marginals_entropies: NDArray[np.floating],
     column_groups: NDArray[np.integer],
@@ -174,16 +168,6 @@ def sample_cdf(
     infoweights: NDArray[np.floating]
         Array of the information weight of each column.
 
-    qs: NDArray[np.floating]
-        2d Array of with shape (n_column_groups, n_cols). Each row r is the q array for
-        sampling row ids proportion to that column group r's marginal distribution via
-        Walker's Alias method.
-
-    aliases: NDArray[np.int64]
-        2d Array of with shape (n_column_groups, n_cols). Each row r is the alias array for
-        sampling row ids proportion to that column group r's marginal distribution via Walker's
-        Alias method.
-
     marginals: NDArray[np.floating]
         2d Array where row r is the marginal distribution for column group r.
 
@@ -207,45 +191,82 @@ def sample_cdf(
     -------
     Array of CDF values.
     """
+    # n_cols
+    assert len(infoweights) == len(column_counts) == len(column_groups)
+    # n_column_groups
+    assert np.max(column_groups) + 1 == marginals.shape[0] == len(marginals_entropies)
+    # Assert all target params or no target params
+    assert (
+        target is not None
+        and target_marginal is not None
+        and target_marginal_entropy is not None
+    ) or (
+        target is None and target_marginal is None and target_marginal_entropy is None
+    )
     dtype = infoweights.dtype.type
     n_cols = len(infoweights)
-    cdf = np.zeros(n_cols, dtype=np.int32)
-    for col in numba.prange(n_cols):
-        count = column_counts[col]
-        if count == 0:
-            continue
-        group = column_groups[col]
-        rng = rngs[col]
+    n_rows = marginals.shape[1]
+    n_column_groups = marginals.shape[0]
+    n_threads = numba.get_num_threads()
+
+    qs, aliases = alias_sampling_setup(marginals)
+
+    cdf = np.zeros((n_threads, n_cols), dtype=np.int32)
+
+    for group in range(n_column_groups):
+        group_ids = np.where(column_groups == group)[0]
+        group_counts = column_counts[group_ids]
+        unique_group_counts = np.unique(group_counts)
+        unique_group_counts.sort()
+        count_ids = [group_ids[group_counts == count] for count in unique_group_counts]
+        group_marginal = marginals[group]
+        group_marginal_entropy = marginals_entropies[group]
+        group_qs = qs[group]
+        group_aliases = aliases[group]
 
         # Unpack target_marginal and target_marginal_entropy if present
-        target_group_marginal = None
+        group_target_marginal = None
         if target_marginal is not None:
-            target_group_marginal = target_marginal[group]
-        target_group_marginal_entropy = None
+            group_target_marginal = target_marginal[group]
+        group_target_marginal_entropy = None
         if target_marginal_entropy is not None:
-            target_group_marginal_entropy = target_marginal_entropy[group]
+            group_target_marginal_entropy = target_marginal_entropy[group]
 
-        for _ in range(n_samples):
-            sample_indices, sample_data = sample_column(
-                count,
-                qs[group],
-                aliases[group],
-                rng,
-            )
-            sample_weight = column_weight(
-                sample_indices,
-                sample_data,
-                marginals[group],
-                marginals_entropies[group],
-                dtype,
-                target,
-                target_group_marginal,
-                target_group_marginal_entropy,
-                supervision_weight,
-            )
-            if sample_weight < infoweights[col] - offset:
-                cdf[col] += 1
+        for _ in numba.prange(n_samples):
+            thread_id = numba.get_thread_id()
+            rng = rngs[thread_id]
+            sample_column = np.zeros(n_rows, dtype=np.int32)
+            sampled_so_far = 0
+            for next_count, next_count_ids in zip(unique_group_counts, count_ids):
+                add_samples(
+                    next_count - sampled_so_far,
+                    sample_column,
+                    group_qs,
+                    group_aliases,
+                    rng,
+                )
+                sampled_so_far = next_count
 
+                sample_indices = np.nonzero(sample_column)[0]
+                sample_data = sample_column[sample_indices]
+
+                sample_weight = column_weight(
+                    sample_indices,
+                    sample_data,
+                    group_marginal,
+                    group_marginal_entropy,
+                    dtype,
+                    target,
+                    group_target_marginal,
+                    group_target_marginal_entropy,
+                    supervision_weight,
+                )
+
+                for col_id in next_count_ids:
+                    if sample_weight < infoweights[col_id] - offset:
+                        cdf[thread_id, col_id] += 1
+
+    cdf = np.sum(cdf, axis=0)
     return cdf / n_samples
 
 
@@ -332,7 +353,7 @@ def is_stopword(
     if rng is None:
         rng = np.random.default_rng()
     # Spawn independent generators for each column so we can process in parallel
-    rngs = List([np.random.default_rng(s) for s in rng.spawn(data.shape[1])])
+    rngs = List([np.random.default_rng(s) for s in rng.spawn(numba.get_num_threads())])
 
     # Pre-compute each column's information weight if not passed
     if infoweights is None:
@@ -371,17 +392,12 @@ def is_stopword(
             if normalize:
                 target_marginals_entropies = entropy(target_marginals)
 
-        # Set up fast sampling of row ids with probabilities proportional to marginal
-        qs, aliases = alias_sampling_setup(marginals)
-
         cdf = sample_cdf(
             offset,
             n_samples,
             rngs,
             infoweights,
             column_counts,
-            qs,
-            aliases,
             marginals,
             marginals_entropies,
             column_groups,
@@ -398,7 +414,7 @@ def is_stopword(
         # Column groups not needed for uniform null hypotheses
         dummy_column_groups = np.broadcast_to(0, data.shape[1])
         marginals = np.broadcast_to(dtype(1 / data.shape[0]), (1, data.shape[0]))
-        marginals_entropies = entropy(marginals)
+        marginals_entropies = np.full(marginals.shape[0], np.nan)
         if normalize:
             marginals_entropies = entropy(marginals)
 
@@ -420,17 +436,12 @@ def is_stopword(
             if normalize:
                 target_marginals_entropies = entropy(target_marginals)
 
-        # Set up fast sampling of row ids with probabilities proportional to marginal
-        qs, aliases = alias_sampling_setup(marginals)
-
         cdf = sample_cdf(
             offset,
             n_samples,
             rngs,
             infoweights,
             column_counts,
-            qs,
-            aliases,
             marginals,
             marginals_entropies,
             dummy_column_groups,

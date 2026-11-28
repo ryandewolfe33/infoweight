@@ -82,7 +82,7 @@ def combine_unsupervised_and_supervised_weight(
     )
 
 
-@numba.njit
+@numba.njit(nogil=True, cache=True)
 def expected_group_weights(
     weights: NDArray[np.floating],
     column_groups: NDArray[np.floating],

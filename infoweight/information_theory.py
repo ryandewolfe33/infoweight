@@ -77,7 +77,7 @@ def kl_divergence(
     return result
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, cache=True)
 def entropy(
     marginals: NDArray[np.floating],
 ) -> NDArray[np.floating]:
